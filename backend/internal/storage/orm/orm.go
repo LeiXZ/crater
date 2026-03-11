@@ -1,8 +1,10 @@
 package orm
 
 import (
+	"fmt"
 	"sync"
 
+	"github.com/raids-lab/crater/internal/storage/config"
 	"github.com/raids-lab/crater/internal/storage/logutils"
 
 	"gorm.io/driver/postgres"
@@ -27,8 +29,11 @@ type GormDBWrapper struct {
 func opendb() *gorm.DB {
 	once.Do(func() {
 		if instance == nil {
-			dsn := `host=192.168.5.60 user=postgres password=DcNuWzUh0kI2k7tZSl3Uf84LwDm0cRMSWqwcYtTbgK35g56rjenpXfUzOjy7N0zz 
-				dbname=crater port=30432 sslmode=require TimeZone=Asia/Shanghai`
+			dbConfig := config.GetConfig()
+			dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s TimeZone=%s",
+				dbConfig.Postgres.Host, dbConfig.Postgres.User, dbConfig.Postgres.Password,
+				dbConfig.Postgres.DBName, dbConfig.Postgres.Port,
+				dbConfig.Postgres.SSLMode, dbConfig.Postgres.TimeZone)
 			var err error
 			instance, err = gorm.Open(postgres.Open(dsn))
 			if err != nil {

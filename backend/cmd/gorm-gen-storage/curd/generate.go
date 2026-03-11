@@ -2,27 +2,18 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/raids-lab/crater/internal/storage/dao/model"
+	"github.com/raids-lab/crater/internal/storage/dao/query"
 
-	"gorm.io/driver/postgres"
 	"gorm.io/gen"
-	"gorm.io/gorm"
 )
 
-func ConnectPostgres() *gorm.DB {
-	// Connect to the database
-	dsn := `host=192.168.5.60 user=postgres password=DcNuWzUh0kI2k7tZSl3Uf84LwDm0cRMSWqwcYtTbgK35g56rjenpXfUzOjy7N0zz 
-		dbname=crater port=30432 sslmode=disable TimeZone=Asia/Shanghai`
-	db, err := gorm.Open(postgres.Open(dsn))
-	if err != nil {
-		panic(fmt.Errorf("connect to postgres: %w", err))
-	}
-	return db
-}
-
 func main() {
+	err := query.InitDB()
+	if err != nil {
+		panic(err)
+	}
+
 	g := gen.NewGenerator(gen.Config{
 		OutPath: "./internal/storage/dao/query",
 
@@ -33,7 +24,7 @@ func main() {
 	})
 
 	// 通常复用项目中已有的SQL连接配置 db(*gorm.DB)
-	g.UseDB(ConnectPostgres())
+	g.UseDB(query.DB)
 
 	// 从连接的数据库为所有表生成 Model 结构体和 CRUD 代码
 	g.ApplyBasic(

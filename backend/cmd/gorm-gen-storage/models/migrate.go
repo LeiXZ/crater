@@ -1,29 +1,22 @@
-// Migration script for gorm-gen
+// Migration script for storage gorm-gen
 package main
 
 import (
 	"fmt"
 
-	"github.com/raids-lab/crater/internal/storage/dao/model"
-
 	"github.com/go-gormigrate/gormigrate/v2"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	"github.com/raids-lab/crater/internal/storage/dao/model"
+	"github.com/raids-lab/crater/internal/storage/dao/query"
 )
 
-func ConnectPostgres() *gorm.DB {
-	// Connect to the database
-	dsn := `host=192.168.5.60 user=postgres password=DcNuWzUh0kI2k7tZSl3Uf84LwDm0cRMSWqwcYtTbgK35g56rjenpXfUzOjy7N0zz 
-		dbname=crater port=30432 sslmode=require TimeZone=Asia/Shanghai`
-	db, err := gorm.Open(postgres.Open(dsn))
-	if err != nil {
-		panic(fmt.Errorf("connect to postgres: %w", err))
-	}
-	return db
-}
-
 func main() {
-	db := ConnectPostgres()
+	err := query.InitDB()
+	if err != nil {
+		panic(fmt.Errorf("could not init db: %w", err))
+	}
+	db := query.DB
 
 	m := gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
 		// your migrations here
