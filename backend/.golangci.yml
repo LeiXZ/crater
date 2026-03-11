@@ -38,6 +38,7 @@ linters:
         logger:
           files:
             - "!**/pkg/logutils/**.go"
+            - "!**/internal/storage/logutils/**.go"
           deny:
             - pkg: github.com/sirupsen/logrus
               desc: logging is allowed only by logutils.Log.
@@ -182,6 +183,7 @@ formatters:
     goimports:
       local-prefixes:
         - github.com/golangci/golangci-lint
+        - github.com/raids-lab/crater
   exclusions:
     generated: lax
     paths:

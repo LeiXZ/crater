@@ -121,9 +121,8 @@ declare -A CONFIG_FILES=(
     ["backend/.debug.env"]="backend/.debug.env"
     ["backend/kubeconfig"]="backend/kubeconfig"
     ["backend/etc/debug-config.yaml"]="backend/etc/debug-config.yaml"
+    ["backend/etc/storage-config.yaml"]="backend/etc/storage-config.yaml"
     ["frontend/.env.development"]="frontend/.env.development"
-    ["storage/.env"]="storage/.env"
-    ["storage/etc/config.yaml"]="storage/etc/config.yaml"
 )
 
 # Get project root directory
@@ -268,16 +267,16 @@ do_link() {
     create_symlink "$BACKEND_CONFIG_DIR/kubeconfig" "$PROJECT_ROOT/backend/kubeconfig" "backend/kubeconfig"
     create_symlink "$BACKEND_CONFIG_DIR/debug-config.yaml" "$PROJECT_ROOT/backend/etc/debug-config.yaml" "backend/etc/debug-config.yaml"
 
+    # Storage configurations (now part of backend)
+    echo ""
+    echo -e "${CYAN}Linking storage configurations (under backend)...${RESET}"
+    create_symlink "$STORAGE_CONFIG_DIR/.env" "$PROJECT_ROOT/backend/.storage.env" "backend/.storage.env"
+    create_symlink "$STORAGE_CONFIG_DIR/config.yaml" "$PROJECT_ROOT/backend/etc/storage-config.yaml" "backend/etc/storage-config.yaml"
+
     # Frontend configurations
     echo ""
     echo -e "${CYAN}Linking frontend configurations...${RESET}"
     create_symlink "$FRONTEND_CONFIG_DIR/.env.development" "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"
-
-    # Storage configurations
-    echo ""
-    echo -e "${CYAN}Linking storage configurations...${RESET}"
-    create_symlink "$STORAGE_CONFIG_DIR/.env" "$PROJECT_ROOT/storage/.env" "storage/.env"
-    create_symlink "$STORAGE_CONFIG_DIR/config.yaml" "$PROJECT_ROOT/storage/etc/config.yaml" "storage/etc/config.yaml"
 
     echo ""
     echo -e "${GREEN}✅ All symlinks created successfully!${RESET}"
@@ -334,16 +333,16 @@ do_status() {
 
     echo ""
 
-    # Frontend configurations
-    echo -e "${BLUE}Frontend:${RESET}"
-    check_file_status "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"
+    # Storage configurations (now part of backend)
+    echo -e "${BLUE}Storage (under backend):${RESET}"
+    check_file_status "$PROJECT_ROOT/backend/.storage.env" "backend/.storage.env"
+    check_file_status "$PROJECT_ROOT/backend/etc/storage-config.yaml" "backend/etc/storage-config.yaml"
 
     echo ""
 
-    # Storage configurations
-    echo -e "${BLUE}Storage:${RESET}"
-    check_file_status "$PROJECT_ROOT/storage/.env" "storage/.env"
-    check_file_status "$PROJECT_ROOT/storage/etc/config.yaml" "storage/etc/config.yaml"
+    # Frontend configurations
+    echo -e "${BLUE}Frontend:${RESET}"
+    check_file_status "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"
 
     echo ""
 }
@@ -401,9 +400,15 @@ do_unlink() {
 
     echo ""
 
-    # Frontend configurations
-    echo -e "${CYAN}Frontend:${RESET}"
-    if remove_symlink "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"; then
+    # Storage configurations (now part of backend)
+    echo -e "${CYAN}Storage (under backend):${RESET}"
+    if remove_symlink "$PROJECT_ROOT/backend/.storage.env" "backend/.storage.env"; then
+        removed_count=$((removed_count + 1))
+    else
+        skipped_count=$((skipped_count + 1))
+    fi
+
+    if remove_symlink "$PROJECT_ROOT/backend/etc/storage-config.yaml" "backend/etc/storage-config.yaml"; then
         removed_count=$((removed_count + 1))
     else
         skipped_count=$((skipped_count + 1))
@@ -411,15 +416,9 @@ do_unlink() {
 
     echo ""
 
-    # Storage configurations
-    echo -e "${CYAN}Storage:${RESET}"
-    if remove_symlink "$PROJECT_ROOT/storage/.env" "storage/.env"; then
-        removed_count=$((removed_count + 1))
-    else
-        skipped_count=$((skipped_count + 1))
-    fi
-
-    if remove_symlink "$PROJECT_ROOT/storage/etc/config.yaml" "storage/etc/config.yaml"; then
+    # Frontend configurations
+    echo -e "${CYAN}Frontend:${RESET}"
+    if remove_symlink "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"; then
         removed_count=$((removed_count + 1))
     else
         skipped_count=$((skipped_count + 1))
@@ -499,9 +498,15 @@ do_restore() {
 
     echo ""
 
-    # Frontend configurations
-    echo -e "${CYAN}Frontend:${RESET}"
-    if restore_backup "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"; then
+    # Storage configurations (now part of backend)
+    echo -e "${CYAN}Storage (under backend):${RESET}"
+    if restore_backup "$PROJECT_ROOT/backend/.storage.env" "backend/.storage.env"; then
+        restored_count=$((restored_count + 1))
+    else
+        skipped_count=$((skipped_count + 1))
+    fi
+
+    if restore_backup "$PROJECT_ROOT/backend/etc/storage-config.yaml" "backend/etc/storage-config.yaml"; then
         restored_count=$((restored_count + 1))
     else
         skipped_count=$((skipped_count + 1))
@@ -509,15 +514,9 @@ do_restore() {
 
     echo ""
 
-    # Storage configurations
-    echo -e "${CYAN}Storage:${RESET}"
-    if restore_backup "$PROJECT_ROOT/storage/.env" "storage/.env"; then
-        restored_count=$((restored_count + 1))
-    else
-        skipped_count=$((skipped_count + 1))
-    fi
-
-    if restore_backup "$PROJECT_ROOT/storage/etc/config.yaml" "storage/etc/config.yaml"; then
+    # Frontend configurations
+    echo -e "${CYAN}Frontend:${RESET}"
+    if restore_backup "$PROJECT_ROOT/frontend/.env.development" "frontend/.env.development"; then
         restored_count=$((restored_count + 1))
     else
         skipped_count=$((skipped_count + 1))

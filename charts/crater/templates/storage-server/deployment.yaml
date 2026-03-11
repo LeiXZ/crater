@@ -24,8 +24,9 @@ spec:
     {{- end }}
       containers:
         - name: webdav
-          image: {{ .Values.images.storage.repository }}:{{ .Values.images.storage.tag }}
+          image: {{ .Values.images.backend.repository }}:{{ .Values.images.backend.tag }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["/storage-server"]
           resources:
             limits:
               memory: 10Gi

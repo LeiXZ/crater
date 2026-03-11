@@ -39,11 +39,7 @@ images:
     repository: "ghcr.io/raids-lab/crater-frontend"
     # -- Frontend service image tag
     tag: "latest"
-  storage:
-    # -- Storage server image repository
-    repository: "ghcr.io/raids-lab/storage-server"
-    # -- Storage server image tag
-    tag: "latest"
+  # NOTE: storage-server is now included in the backend image, no separate image needed
   cronjob:
     # -- Cronjob image repository
     repository: "docker.io/badouralix/curl-jq"

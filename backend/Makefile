@@ -126,6 +126,12 @@ curd: ## Generate Gorm CURD code.
 	go run cmd/gorm-gen/curd/generate.go
 	@echo "$(GREEN)✅ CURD code generated successfully$(RESET)"
 
+.PHONY: curd-storage
+curd-storage: ## Generate Gorm CURD code for storage.
+	@echo "$(MAGENTA)Generating storage CURD code...$(RESET)"
+	go run cmd/gorm-gen-storage/curd/generate.go
+	@echo "$(GREEN)✅ Storage CURD code generated successfully$(RESET)"
+
 .PHONY: migrate
 migrate: ## Migrate database.
 	@echo "$(MAGENTA)Migrating database...$(RESET)"
@@ -159,6 +165,12 @@ build-migrate: fmt lint ## Build migration binary.
 	@echo "$(YELLOW)🔨 Building migration binary...$(RESET)"
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/migrate cmd/gorm-gen/models/migrate.go
 	@echo "$(GREEN)✅ Migration binary built successfully: bin/migrate$(RESET)"
+
+.PHONY: build-storage
+build-storage: fmt ## Build storage server binary.
+	@echo "$(YELLOW)🔨 Building storage server binary...$(RESET)"
+	go build -ldflags="-w -s $(VERSION_LDFLAGS)" -o bin/storage-server cmd/storage/main.go
+	@echo "$(GREEN)✅ Storage server binary built successfully: bin/storage-server$(RESET)"
 
 ##@ Development Tools
 
