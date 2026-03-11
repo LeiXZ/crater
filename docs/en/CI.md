@@ -26,7 +26,7 @@ Crater's CI process is built on GitHub Actions, Docker Buildx, and GitHub Contai
 
 Crater's CI process is divided into four main categories based on different build targets, each with independent trigger conditions and build processes:
 
-- **Frontend & Backend** is the core of the CI process, responsible for code quality checks and image build publishing for application services (Backend, Frontend, Storage). It adopts a two-stage design: the PR check stage performs code style checks (Lint) and build verification to ensure code quality; the build and publish stage builds multi-platform images and pushes them to GHCR after code merge, while managing storage space through automatic cleanup strategies.
+- **Frontend & Backend** is the core of the CI process, responsible for code quality checks and image build publishing for application services (Backend, Frontend). The Backend image also includes the storage service (storage-server). It adopts a two-stage design: the PR check stage performs code style checks (Lint) and build verification to ensure code quality; the build and publish stage builds multi-platform images and pushes them to GHCR after code merge, while managing storage space through automatic cleanup strategies.
 
 - **Dependency Images** are responsible for building and pushing Docker images related to build tools (buildx-client, envd-client, nerdctl-client), providing necessary runtime environments for application builds. These images also support multi-platform builds and are managed uniformly through GHCR.
 
@@ -40,15 +40,15 @@ Crater's CI process is divided into four main categories based on different buil
 
 This section introduces the CI configuration for Crater's frontend and backend.
 
-It should be noted that the storage service (storage-server) is located in the `storage` directory under the main repository, and its CI configuration is also included in this section. The storage service adopts the same CI pattern as the backend and is planned to be merged into the backend in the future.
+It should be noted that the storage service (storage-server) has been merged into the backend directory (entry point at `backend/cmd/storage/main.go`, core code at `backend/internal/storage/`), and its CI process is now unified into the backend's build pipeline.
 
 ### Overview
 
-The CI process for frontend and backend adopts a two-stage design: PR check stage and build & publish stage. Inputs are source code (Go code or frontend resources), outputs are multi-platform Docker images (linux/amd64 and linux/arm64), and artifacts are stored in GHCR repositories `ghcr.io/raids-lab/crater-backend`, `ghcr.io/raids-lab/crater-frontend`, and `ghcr.io/raids-lab/storage-server`.
+The CI process for frontend and backend adopts a two-stage design: PR check stage and build & publish stage. Inputs are source code (Go code or frontend resources), outputs are multi-platform Docker images (linux/amd64 and linux/arm64), and artifacts are stored in GHCR repositories `ghcr.io/raids-lab/crater-backend` and `ghcr.io/raids-lab/crater-frontend`.
 
 The PR check stage executes before code merge, performing code style checks (Lint) and build verification, building only a single platform to save time, without building and pushing images. The build & publish stage executes after code merge or when creating version tags, building multi-platform images and pushing them to GHCR, while automatically cleaning up old images to control storage space.
 
-The three components (Backend, Frontend, and Storage) adopt the same two-stage CI pattern, but the build processes differ: Backend and Storage compile to generate binary files and then package them into images, while Frontend builds static resources and provides service images through web servers.
+The two components (Backend and Frontend) adopt the same two-stage CI pattern, but the build processes differ: Backend compiles to generate binary files (including storage-server) and then packages them into images, while Frontend builds static resources and provides service images through web servers.
 
 The following sections mainly introduce the detailed processes and mechanisms of the build & publish stage, and the PR check stage will be briefly explained at the end.
 
@@ -101,7 +101,7 @@ The version information generation logic is implemented through scripts in the w
 
 The script checks `github.ref_type` to determine the trigger type: when triggered by a tag, it uses the tag name as the version number and sets BUILD_TYPE to "release"; when triggered by a branch, it uses the first 7 characters of the commit SHA as the version number and sets BUILD_TYPE to "development".
 
-For Go projects like Backend and Storage, version information is injected into binary files through `ldflags`:
+For Go projects like Backend, version information is injected into binary files through `ldflags`:
 
 ```yaml
 go build -ldflags="-X main.AppVersion=${{ steps.set-version.outputs.app_version }} \
@@ -132,7 +132,7 @@ When deploying with images, users are advised to synchronize frontend and backen
 
 The build & publish stage supports building images for both linux/amd64 and linux/arm64 platforms simultaneously to meet different hardware architecture needs. Cross-platform building is divided into two stages: first compiling binary files for different platforms, then using Docker Buildx to build multi-platform images.
 
-For projects that require compilation like Backend and Storage, GitHub Actions' matrix strategy is used to build binary files for different platforms in parallel:
+For projects that require compilation like Backend, GitHub Actions' matrix strategy is used to build binary files for different platforms in parallel:
 
 ```yaml
 build_backend:
@@ -213,7 +213,7 @@ Tag rule parameter descriptions:
 
 ### Image Push & Cleanup
 
-After image building is complete, images need to be pushed to the image registry and old images cleaned up to control storage space. Image pushing uses GHCR (GitHub Container Registry) as the repository. The complete image address format is `${{ env.REGISTRY }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}`, i.e., `ghcr.io/raids-lab/crater-backend`, `ghcr.io/raids-lab/crater-frontend`, and `ghcr.io/raids-lab/storage-server`.
+After image building is complete, images need to be pushed to the image registry and old images cleaned up to control storage space. Image pushing uses GHCR (GitHub Container Registry) as the repository. The complete image address format is `${{ env.REGISTRY }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}`, i.e., `ghcr.io/raids-lab/crater-backend` and `ghcr.io/raids-lab/crater-frontend`.
 
 Before pushing, you need to log in to GHCR with the following configuration:
 

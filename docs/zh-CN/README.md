@@ -120,7 +120,7 @@ helm install crater oci://ghcr.io/raids-lab/crater --version <chart-version>
 
 - `backend/`: 后端服务
 - `frontend/`: Web 前端
-- `storage/`: 存储服务
+- `backend/internal/storage/`: 存储服务（已合并至后端）
 - `charts/`: 用于部署 Crater 的 Helm Chart
 - `website/`: 文档网站源码
 - `grafana-dashboards/`: Crater 使用的 Grafana Dashboard
@@ -178,7 +178,7 @@ make install-hooks
 
 - 后端： [后端开发指南](../../backend/README.zh-CN.md)
 - 前端： [前端开发指南](../../frontend/README.zh-CN.md)
-- 存储： [存储服务开发指南](../../storage/README_CN.md)
+- 存储： [存储服务开发指南](../../backend/README.zh-CN.md)
 - 文档网站： [文档网站开发指南](../../website/README.zh-CN.md)
 
 ### 4) 配置文件管理（可选）
@@ -195,7 +195,7 @@ config/
 │   └── debug-config.yaml       # 后端调试配置
 ├── frontend/
 │   └── .env.development        # 前端开发环境变量
-└── storage/
+└── storage/                    # 存储服务配置（存储服务已合并至后端）
     ├── .env                    # 存储服务环境变量
     └── config.yaml             # 存储服务配置
 ```
@@ -226,7 +226,7 @@ make pre-commit-check
 ```bash
 cd frontend && make pre-commit-check
 cd backend && make pre-commit-check
-cd storage && make pre-commit-check
+cd backend && make pre-commit-check  # also covers storage
 cd website && make pre-commit-check
 ```
 

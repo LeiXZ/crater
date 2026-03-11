@@ -26,7 +26,7 @@ Crater 的 CI 流程基于 GitHub Actions、Docker Buildx 和 GitHub Container R
 
 Crater 的 CI 流程根据构建目标的不同，划分为四个主要类别，每个类别都有独立的触发条件和构建流程：
 
-- **前端与后端** 是 CI 流程的核心，负责应用服务（Backend、Frontend、Storage）的代码质量检查和镜像构建发布。采用两阶段设计：PR 检查阶段进行代码风格检查（Lint）和构建验证，确保代码质量；构建发布阶段在代码合并后构建多平台镜像并推送到 GHCR，同时通过自动清理策略管理存储空间。
+- **前端与后端** 是 CI 流程的核心，负责应用服务（Backend、Frontend）的代码质量检查和镜像构建发布。其中 Backend 镜像同时包含存储服务（storage-server）。采用两阶段设计：PR 检查阶段进行代码风格检查（Lint）和构建验证，确保代码质量；构建发布阶段在代码合并后构建多平台镜像并推送到 GHCR，同时通过自动清理策略管理存储空间。
 
 - **依赖镜像** 负责构建和推送构建工具相关的 Docker 镜像（buildx-client、envd-client、nerdctl-client），为应用构建提供必要的运行时环境。这些镜像同样支持多平台构建，并通过 GHCR 统一管理。
 
@@ -40,15 +40,15 @@ Crater 的 CI 流程根据构建目标的不同，划分为四个主要类别，
 
 本章节介绍 Crater 前端与后端的 CI 配置。
 
-需要特别说明的是，存储服务（storage-server）位于主仓库下的 `storage` 目录，其 CI 配置也包含在本章节中。存储服务采用与后端相同的 CI 模式，未来计划将其合并至后端。
+需要特别说明的是，存储服务（storage-server）已合并至后端目录（入口位于 `backend/cmd/storage/main.go`，核心代码位于 `backend/internal/storage/`），其 CI 流程已统一纳入后端的构建流程中。
 
 ### 概述
 
-前端与后端的 CI 流程采用两阶段设计：PR 检查阶段和构建发布阶段。输入为源代码（Go 代码或前端资源），输出为多平台 Docker 镜像（linux/amd64 和 linux/arm64），产物保存在 GHCR 的 `ghcr.io/raids-lab/crater-backend`、`ghcr.io/raids-lab/crater-frontend` 和 `ghcr.io/raids-lab/storage-server` 仓库中。
+前端与后端的 CI 流程采用两阶段设计：PR 检查阶段和构建发布阶段。输入为源代码（Go 代码或前端资源），输出为多平台 Docker 镜像（linux/amd64 和 linux/arm64），产物保存在 GHCR 的 `ghcr.io/raids-lab/crater-backend` 和 `ghcr.io/raids-lab/crater-frontend` 仓库中。
 
 PR 检查阶段在代码合并前执行，进行代码风格检查（Lint）和构建验证，只构建单平台以节省时间，不构建和推送镜像。构建发布阶段在代码合并后或创建版本标签时执行，构建多平台镜像并推送到 GHCR，同时自动清理旧镜像以控制存储空间。
 
-Backend、Frontend 和 Storage 三个组件采用相同的两阶段 CI 模式，但构建过程不同：Backend 和 Storage 编译生成二进制文件后打包到镜像中，Frontend 构建静态资源后通过 Web 服务器提供服务的镜像。
+Backend 和 Frontend 两个组件采用相同的两阶段 CI 模式，但构建过程不同：Backend 编译生成二进制文件（包括 storage-server）后打包到镜像中，Frontend 构建静态资源后通过 Web 服务器提供服务的镜像。
 
 后续章节主要介绍构建发布阶段的详细流程和机制，PR 检查阶段将在最后简要说明。
 
@@ -101,7 +101,7 @@ on:
 
 脚本通过检查 `github.ref_type` 判断触发类型：标签触发时使用标签名称作为版本号，BUILD_TYPE 设置为 "release"；分支触发时使用 commit SHA 的前 7 位作为版本号，BUILD_TYPE 设置为 "development"。
 
-对于 Backend 和 Storage 这类 Go 项目，版本信息通过 `ldflags` 注入到二进制文件中：
+对于 Backend 这类 Go 项目，版本信息通过 `ldflags` 注入到二进制文件中：
 
 ```yaml
 go build -ldflags="-X main.AppVersion=${{ steps.set-version.outputs.app_version }} \
@@ -132,7 +132,7 @@ echo "VITE_APP_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
 
 构建发布阶段支持同时构建 linux/amd64 和 linux/arm64 两个平台的镜像，满足不同硬件架构的需求。跨平台构建分为两个阶段：先为不同平台编译二进制文件，然后使用 Docker Buildx 构建多平台镜像。
 
-对于 Backend 和 Storage 这类需要编译的项目，使用 GitHub Actions 的 matrix strategy 并行构建不同平台的二进制文件：
+对于 Backend 这类需要编译的项目，使用 GitHub Actions 的 matrix strategy 并行构建不同平台的二进制文件：
 
 ```yaml
 build_backend:
@@ -213,7 +213,7 @@ QEMU 通过 CPU 模拟实现跨平台构建，允许在 amd64 架构的构建机
 
 ### 镜像推送与清理
 
-镜像构建完成后，需要推送到镜像仓库并清理旧镜像以控制存储空间。镜像推送使用 GHCR（GitHub Container Registry）作为仓库，完整的镜像地址格式为 `${{ env.REGISTRY }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}`，即 `ghcr.io/raids-lab/crater-backend`、`ghcr.io/raids-lab/crater-frontend` 和 `ghcr.io/raids-lab/storage-server`。
+镜像构建完成后，需要推送到镜像仓库并清理旧镜像以控制存储空间。镜像推送使用 GHCR（GitHub Container Registry）作为仓库，完整的镜像地址格式为 `${{ env.REGISTRY }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}`，即 `ghcr.io/raids-lab/crater-backend` 和 `ghcr.io/raids-lab/crater-frontend`。
 
 推送前需要先登录到 GHCR，配置如下：
 
