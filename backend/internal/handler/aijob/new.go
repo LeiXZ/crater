@@ -139,6 +139,12 @@ func (mgr *AIJobMgr) CreateJupyterJob(c *gin.Context) {
 
 	taskModel.PodTemplate = datatypes.NewJSONType(podSpec)
 	taskModel.Owner = token.Username
+
+	if err := interutil.CheckStorageQuota(token.Username); err != nil {
+		resputil.Error(c, err.Error(), resputil.NotSpecified)
+		return
+	}
+
 	err = mgr.taskService.Create(taskModel)
 	if err != nil {
 		resputil.Error(c, fmt.Sprintf("create task failed, err %v", err), resputil.NotSpecified)
@@ -205,6 +211,12 @@ func (mgr *AIJobMgr) CreateCustom(c *gin.Context) {
 
 	taskModel.PodTemplate = datatypes.NewJSONType(podSpec)
 	taskModel.Owner = token.Username
+
+	if err := interutil.CheckStorageQuota(token.Username); err != nil {
+		resputil.Error(c, err.Error(), resputil.NotSpecified)
+		return
+	}
+
 	err = mgr.taskService.Create(taskModel)
 	if err != nil {
 		resputil.Error(c, fmt.Sprintf("create task failed, err %v", err), resputil.NotSpecified)

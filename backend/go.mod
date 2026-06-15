@@ -18,6 +18,7 @@ require (
 	github.com/prometheus/common v0.65.0
 	github.com/robfig/cron/v3 v3.0.0
 	github.com/samber/lo v1.51.0
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/smartystreets/goconvey v1.8.1
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.0
