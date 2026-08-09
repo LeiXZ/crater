@@ -39,6 +39,11 @@ func newUser(db *gorm.DB, opts ...gen.DOOption) user {
 	_user.Status = field.NewUint8(tableName, "status")
 	_user.Space = field.NewString(tableName, "space")
 	_user.ImageQuota = field.NewInt64(tableName, "image_quota")
+	_user.SpaceQuota = field.NewInt64(tableName, "space_quota")
+	_user.OriginalSpaceQuota = field.NewInt64(tableName, "original_space_quota")
+	_user.JobsFrozen = field.NewBool(tableName, "jobs_frozen")
+	_user.ShrinkStage = field.NewString(tableName, "shrink_stage")
+	_user.ShrinkStageUpdatedAt = field.NewTime(tableName, "shrink_stage_updated_at")
 	_user.ExtraBalance = field.NewInt64(tableName, "extra_balance")
 	_user.LastEmailVerifiedAt = field.NewTime(tableName, "last_email_verified_at")
 	_user.BannedTimestamp = field.NewTime(tableName, "banned_timestamp")
@@ -64,24 +69,29 @@ func newUser(db *gorm.DB, opts ...gen.DOOption) user {
 type user struct {
 	userDo userDo
 
-	ALL                 field.Asterisk
-	ID                  field.Uint
-	CreatedAt           field.Time
-	UpdatedAt           field.Time
-	DeletedAt           field.Field
-	Name                field.String // 用户名
-	Nickname            field.String // 昵称
-	Password            field.String // 密码
-	Role                field.Uint8  // 用户在平台的角色 (guest, user, admin)
-	Status              field.Uint8  // 用户状态 (pending, active, inactive)
-	Space               field.String // 用户空间绝对路径
-	ImageQuota          field.Int64  // 用户在镜像仓库的配额
-	ExtraBalance        field.Int64  // 用户额外点数余额(内部微点, 充值/奖励)
-	LastEmailVerifiedAt field.Time   // 最后一次邮箱验证时间
-	BannedTimestamp     field.Time   // 用户封禁截止时间，晚于当前时间表示封禁中
-	BanRestrictions     field.Field  // 最近一次封禁配置的限制内容，仅在封禁截止时间有效时生效
-	Attributes          field.Field  // 用户的额外属性 (昵称、邮箱、电话、头像等)
-	UserAccounts        userHasManyUserAccounts
+	ALL                  field.Asterisk
+	ID                   field.Uint
+	CreatedAt            field.Time
+	UpdatedAt            field.Time
+	DeletedAt            field.Field
+	Name                 field.String // 用户名
+	Nickname             field.String // 昵称
+	Password             field.String // 密码
+	Role                 field.Uint8  // 用户在平台的角色 (guest, user, admin)
+	Status               field.Uint8  // 用户状态 (pending, active, inactive)
+	Space                field.String // 用户空间绝对路径
+	ImageQuota           field.Int64  // 用户在镜像仓库的配额
+	SpaceQuota           field.Int64  // 用户存储空间配额
+	OriginalSpaceQuota   field.Int64  // 临时扩容前的用户存储空间配额
+	JobsFrozen           field.Bool   // 是否因存储配额冻结作业
+	ShrinkStage          field.String // 存储配额缩容阶段
+	ShrinkStageUpdatedAt field.Time   // 存储配额缩容阶段更新时间
+	ExtraBalance         field.Int64  // 用户额外点数余额(内部微点, 充值/奖励)
+	LastEmailVerifiedAt  field.Time   // 最后一次邮箱验证时间
+	BannedTimestamp      field.Time   // 用户封禁截止时间，晚于当前时间表示封禁中
+	BanRestrictions      field.Field  // 最近一次封禁配置的限制内容，仅在封禁截止时间有效时生效
+	Attributes           field.Field  // 用户的额外属性 (昵称、邮箱、电话、头像等)
+	UserAccounts         userHasManyUserAccounts
 
 	UserDatasets userHasManyUserDatasets
 
@@ -111,6 +121,11 @@ func (u *user) updateTableName(table string) *user {
 	u.Status = field.NewUint8(table, "status")
 	u.Space = field.NewString(table, "space")
 	u.ImageQuota = field.NewInt64(table, "image_quota")
+	u.SpaceQuota = field.NewInt64(table, "space_quota")
+	u.OriginalSpaceQuota = field.NewInt64(table, "original_space_quota")
+	u.JobsFrozen = field.NewBool(table, "jobs_frozen")
+	u.ShrinkStage = field.NewString(table, "shrink_stage")
+	u.ShrinkStageUpdatedAt = field.NewTime(table, "shrink_stage_updated_at")
 	u.ExtraBalance = field.NewInt64(table, "extra_balance")
 	u.LastEmailVerifiedAt = field.NewTime(table, "last_email_verified_at")
 	u.BannedTimestamp = field.NewTime(table, "banned_timestamp")
@@ -140,7 +155,7 @@ func (u *user) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (u *user) fillFieldMap() {
-	u.fieldMap = make(map[string]field.Expr, 18)
+	u.fieldMap = make(map[string]field.Expr, 23)
 	u.fieldMap["id"] = u.ID
 	u.fieldMap["created_at"] = u.CreatedAt
 	u.fieldMap["updated_at"] = u.UpdatedAt
@@ -152,6 +167,11 @@ func (u *user) fillFieldMap() {
 	u.fieldMap["status"] = u.Status
 	u.fieldMap["space"] = u.Space
 	u.fieldMap["image_quota"] = u.ImageQuota
+	u.fieldMap["space_quota"] = u.SpaceQuota
+	u.fieldMap["original_space_quota"] = u.OriginalSpaceQuota
+	u.fieldMap["jobs_frozen"] = u.JobsFrozen
+	u.fieldMap["shrink_stage"] = u.ShrinkStage
+	u.fieldMap["shrink_stage_updated_at"] = u.ShrinkStageUpdatedAt
 	u.fieldMap["extra_balance"] = u.ExtraBalance
 	u.fieldMap["last_email_verified_at"] = u.LastEmailVerifiedAt
 	u.fieldMap["banned_timestamp"] = u.BannedTimestamp

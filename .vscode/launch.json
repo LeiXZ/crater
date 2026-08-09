@@ -12,6 +12,8 @@
             "program": "${workspaceFolder}/backend/cmd/crater/main.go",
             "cwd": "${workspaceFolder}/backend",
             "env": {
+                "GOCACHE": "${workspaceFolder}/backend/.gocache",
+                "GOTOOLCHAIN": "go1.25.4",
                 "KUBECONFIG": "${workspaceFolder}/backend/kubeconfig",
                 "NO_PROXY": "k8s.cluster.master"
             }

@@ -1,4 +1,278 @@
 ---
-title: "高可用数据库配置"
-description: "提供高可用的数据库配置"
+title: "CephFS 配额管理"
+description: "在 Rook CephFS 集群中部署 quota-agent，读取目录用量并安全地管理用户目录配额。"
 ---
+
+## 功能概览
+
+Crater 可以读取 CephFS 用户目录的实际用量，并由管理员设置或取消目录配额。该功能使用以下 CephFS 扩展属性：
+
+- `ceph.dir.rbytes`：目录当前实际用量，无需预先设置配额即可读取。
+- `ceph.quota.max_bytes`：目录最大可用字节数，写入 `0` 表示取消配额限制。
+
+配额管理默认关闭，仅支持由 Rook CephFS CSI 提供的共享存储。NFS、本地盘和其他 CSI 存储仍可正常用于文件浏览、上传和下载，但不会显示配额管理入口。
+
+<Callout type="info" title="按需读取用量">
+Crater 不会通过定时任务扫描所有用户目录。管理员在存储管理页面点击“刷新用量”后，后端才会逐个读取目录用量，并记录每条数据的刷新时间。
+</Callout>
+
+## 实现方式
+
+quota-agent 复用 Crater 的 storage-server 镜像，并通过 `CRATER_STORAGE_MODE=quota-agent` 切换到受限运行模式。请求链路如下：
+
+1. 管理员通过 Crater 后端刷新用量或修改配额。
+2. 后端通过集群内部 Service 调用 quota-agent。
+3. quota-agent 在挂载的 CephFS 目录上读取或写入扩展属性。
+4. 后端缓存目录用量，并将配额修改结果写入操作日志。
+
+quota-agent 只注册内部配额接口，不提供 WebDAV、文件下载或用户登录接口。它使用独立的 CephX 客户端，并且 `p` 权限仅限制在 Crater 使用的 CephFS 子卷路径，不会扩大普通业务 Pod 使用的 CSI 身份权限。
+
+内部接口由后端登录密钥派生的令牌保护，quota-agent 不需要数据库、LDAP、镜像仓库或完整后端配置。此方案不依赖 Rook toolbox。
+
+## 前提条件
+
+启用前请确认：
+
+- Crater 的共享存储 PVC 已经创建并处于 `Bound` 状态。
+- 共享 PVC 由 Rook CephFS CSI 提供，而不是 NFS 或块存储。
+- 集群已经安装 Rook Operator 和 `CephClient` CRD。
+- 执行初始化脚本的管理员可以创建 `CephClient`、Secret、PV 和 PVC，并可以修改原始 PV 的回收策略。
+- backend、storage-server 和 Helm Chart 使用包含 quota-agent 功能的同一版本。
+- 管理终端已经安装 `bash`、`kubectl`、`grep` 和 `helm`。
+
+首先检查共享 PVC。以下示例使用 Chart 的默认 PVC 名称；如果集群修改过 `storage.pvcName`，请替换 `crater-rw-storage`：
+
+```bash
+kubectl -n crater-workspace get pvc crater-rw-storage
+
+SOURCE_PV=$(kubectl -n crater-workspace get pvc crater-rw-storage \
+  -o jsonpath='{.spec.volumeName}')
+
+kubectl get pv "$SOURCE_PV" \
+  -o jsonpath='{.spec.csi.driver}{"\n"}{.spec.csi.volumeAttributes.fsName}{"\n"}{.spec.csi.volumeAttributes.subvolumePath}{"\n"}'
+```
+
+CSI Driver 应类似 `rook-ceph.cephfs.csi.ceph.com`，并且 `fsName` 与 `subvolumePath` 均不为空。
+
+## 创建专用 CephFS 身份
+
+初始化脚本会读取现有 PVC 对应的 CephFS 子卷信息，然后创建：
+
+- 一个仅对该子卷路径拥有 MDS `p` 权限的 `CephClient`；
+- 一个供 CephFS CSI 挂载使用的 Secret；
+- 一个指向同一 CephFS 子卷的静态 PV；
+- 一个供 quota-agent 挂载的专用 PVC。
+
+<Callout type="warn" title="PV 回收策略">
+脚本会把原始动态 PV 的 `persistentVolumeReclaimPolicy` 修改为 `Retain`。这是为了避免静态 PV 仍指向同一子卷时，删除原始 PVC 导致底层 CephFS 子卷被提前回收。执行前请确认该策略符合集群的数据生命周期要求。
+</Callout>
+
+从与已部署 Chart 对应的 Crater 源码版本执行脚本。已有同版本源码时可以跳过克隆步骤。
+
+<CraterChartVersionNotice />
+
+```bash
+git clone --branch "v<chart-version>" --depth 1 \
+  https://github.com/raids-lab/crater.git
+cd crater
+
+APP_NAMESPACE=crater-workspace \
+ROOK_NAMESPACE=rook-ceph \
+SOURCE_PVC=crater-rw-storage \
+bash backend/hack/bootstrap-cephfs-quota-agent.sh
+```
+
+默认会创建以下资源：
+
+| 资源 | 默认名称 |
+| --- | --- |
+| CephClient | `rook-ceph/crater-quota` |
+| CSI Secret | `rook-ceph/crater-quota-csi` |
+| 静态 PV | `crater-quota-storage-pv` |
+| quota-agent PVC | `crater-workspace/crater-quota-storage` |
+
+脚本支持通过环境变量适配不同集群：
+
+| 环境变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `APP_NAMESPACE` | `crater-workspace` | Crater 作业与存储所在命名空间 |
+| `ROOK_NAMESPACE` | `rook-ceph` | Rook Operator 与 CephClient 所在命名空间 |
+| `SOURCE_PVC` | `crater-rw-storage` | 已绑定的 Crater CephFS 共享 PVC |
+| `QUOTA_CLIENT` | `crater-quota` | 专用 CephClient 名称 |
+| `QUOTA_PV` | `crater-quota-storage-pv` | 静态 PV 名称 |
+| `QUOTA_PVC` | `crater-quota-storage` | quota-agent 使用的 PVC 名称 |
+| `CSI_SECRET` | `crater-quota-csi` | CSI 挂载凭证 Secret 名称 |
+
+脚本不会输出 CephX 密钥，也不会修改 `client.csi-cephfs-node` 等现有 CSI 客户端权限。
+
+## 启用 Helm 组件
+
+在集群使用的 values 文件中加入：
+
+```yaml
+quotaAgent:
+  enabled: true
+  existingClaim: crater-quota-storage
+
+backendConfig:
+  storage:
+    quota:
+      rookNamespace: rook-ceph
+      cephFSCSIDriver: rook-ceph.cephfs.csi.ceph.com
+      cephFSName: cephfs
+```
+
+当 `quotaAgent.enabled` 为 `true` 时，Chart 会自动完成以下配置，无需重复填写：
+
+```yaml
+backendConfig:
+  storage:
+    quota:
+      enabled: true
+      provider: storageServer
+      storageServerURL: http://crater-quota-agent.crater-workspace.svc:7320
+```
+
+quota-agent 复用 `images.storage`，因此请确保该镜像标签与此次发布匹配。Rook 不在 `rook-ceph` 命名空间，或 CSI Driver 名称不同的集群，必须覆盖对应字段。
+
+使用现有的完整 values 文件升级 Crater：
+
+<CraterChartVersionNotice />
+
+```bash
+helm upgrade crater oci://ghcr.io/raids-lab/crater \
+  --version <chart-version> \
+  --values values.yaml
+```
+
+升级后 Chart 会在 `namespaces.job` 指定的命名空间创建：
+
+- `Deployment/crater-quota-agent`
+- `Service/crater-quota-agent`
+- `Secret/crater-quota-agent-auth`
+
+默认配置中的 `quotaAgent.enabled: false` 和 `backendConfig.storage.quota.enabled: false` 保证未启用此功能的 NFS 或其他存储集群不受影响。
+
+## 验证部署
+
+确认专用 PVC 和 quota-agent 正常：
+
+```bash
+kubectl -n crater-workspace get pvc crater-quota-storage
+kubectl -n crater-workspace rollout status deployment/crater-quota-agent
+kubectl -n crater-workspace logs deployment/crater-quota-agent
+```
+
+启动日志应包含：
+
+```text
+mode=quota-agent
+```
+
+登录 Crater 管理员界面并进入“存储管理”。后端能力探测成功后，应满足：
+
+- `usage_readable=true`
+- `quota_readable=true`
+- `quota_writable=true`
+
+此时页面会显示配额修改控件和“刷新用量”按钮。首次刷新前，用户仍会正常列出，但用量显示为等待刷新。刷新完成后，每条用量会显示对应的刷新时间。
+
+可以使用一个测试用户完成端到端验证：
+
+1. 点击“刷新用量”，确认用户目录用量可以读取。
+2. 给测试用户设置一个高于当前用量的临时测试配额。
+3. 再次刷新或重新打开页面，确认配额值可以读回。
+4. 测试完成后，在页面中取消配额或恢复原配额。
+5. 在配额修改记录中确认成功或失败操作均已记录。
+
+<Callout type="warn" title="避免影响现有数据">
+不要给用量接近上限的生产用户设置过小的测试配额。CephFS 不会删除已经存在的数据，但目录达到或超过上限后，新的写入会失败，应用通常会收到空间不足错误。
+</Callout>
+
+## 配置参考
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `quotaAgent.enabled` | `false` | 是否创建 quota-agent Deployment 和 Service |
+| `quotaAgent.existingClaim` | 空 | quota-agent 挂载的专用静态 CephFS PVC；启用时必填 |
+| `quotaAgent.replicas` | `1` | quota-agent 副本数 |
+| `backendConfig.storage.quota.enabled` | `false` | 配额功能总开关；启用 quota-agent 时由 Chart 自动打开 |
+| `backendConfig.storage.quota.provider` | `auto` | 可选 `auto`、`storageServer`、`toolbox` 或 `disabled` |
+| `backendConfig.storage.quota.storageServerURL` | 空 | 内部配额服务地址；启用 quota-agent 时由 Chart 自动设置 |
+| `backendConfig.storage.quota.rookNamespace` | `rook-ceph` | Rook 资源与可选 toolbox 所在命名空间 |
+| `backendConfig.storage.quota.cephFSCSIDriver` | 空 | CephFS CSI Driver；为空时根据 Rook 命名空间推导 |
+| `backendConfig.storage.quota.toolboxLabelSelector` | `app=rook-ceph-tools` | 仅在选择 toolbox 回退方案时使用 |
+| `backendConfig.storage.quota.cephFSName` | `cephfs` | PV 未提供 `fsName` 时使用的回退文件系统名称 |
+
+使用 quota-agent 时，主要 Provider 是 `storageServer`，不需要部署 toolbox。`toolboxLabelSelector` 仅用于显式选择 toolbox 或 `auto` 回退模式的集群。
+
+## 常见问题
+
+### 脚本提示不是受支持的 CephFS CSI 卷
+
+检查共享 PVC 对应 PV 的 `.spec.csi.driver`、`volumeAttributes.fsName` 和 `volumeAttributes.subvolumePath`。NFS PVC、块设备 PVC 或缺少子卷路径的 PV 不能使用该初始化脚本。
+
+### 脚本提示 CephClient CRD 不存在
+
+确认 Rook Operator 已安装并正常运行：
+
+```bash
+kubectl api-resources --api-group=ceph.rook.io
+kubectl -n rook-ceph get pods
+```
+
+输出中应包含 `cephclients.ceph.rook.io`。如果 Rook 使用其他命名空间，请同时修改命令和 `ROOK_NAMESPACE`。
+
+### quota-agent PVC 一直处于 Pending
+
+检查静态 PV 与 PVC 的 `storageClassName`、容量、访问模式和 `volumeName` 是否一致，并查看事件：
+
+```bash
+kubectl -n crater-workspace describe pvc crater-quota-storage
+kubectl describe pv crater-quota-storage-pv
+```
+
+### quota-agent 已启动但页面没有配额入口
+
+依次检查：
+
+1. Helm 渲染后的 `quotaAgent.enabled` 是否为 `true`。
+2. 后端配置中的共享 PVC 名称是否正确。
+3. 共享 PV 的 CSI Driver 是否与 `cephFSCSIDriver` 一致。
+4. backend 是否可以访问 `crater-quota-agent` Service。
+5. quota-agent 日志中是否存在读取或写入扩展属性失败。
+
+前端只在后端能力探测确认 CephFS 配额可用后展示入口，仅创建 Pod 并不代表权限已经验证成功。
+
+### 返回 permission denied
+
+确认 quota-agent 挂载的是专用 `crater-quota-storage` PVC，而不是普通 WebDAV PVC；然后检查 `CephClient/crater-quota` 的 MDS caps 是否包含目标 `fsName`、`subvolumePath` 和 `p` 权限。不要通过扩大普通 CSI 节点客户端权限来绕过问题。
+
+### 集群使用 NFS
+
+保持以下默认配置即可：
+
+```yaml
+quotaAgent:
+  enabled: false
+
+backendConfig:
+  storage:
+    quota:
+      enabled: false
+```
+
+文件浏览和上传下载不会受影响，前端也不会显示 CephFS 配额管理页面。
+
+## 停用与清理
+
+只停用功能时，将 `quotaAgent.enabled` 和 `backendConfig.storage.quota.enabled` 设为 `false`，然后执行正常的 Helm 升级。Chart 会停止创建 quota-agent 工作负载，原有文件和配额扩展属性不会被自动删除。
+
+如果还要永久删除专用 CephClient、Secret、PVC 和 PV，请遵循以下顺序：
+
+1. 先停用并确认 quota-agent Deployment 已删除。
+2. 确认没有其他 Pod 使用 `crater-quota-storage`。
+3. 删除专用 PVC 和静态 PV。
+4. 最后删除专用 CSI Secret 与 CephClient。
+
+专用静态 PV 和原始动态 PV 的回收策略均可能为 `Retain`。清理专用资源时不要删除 Crater 原始共享 PVC，也不要手动删除底层 CephFS 子卷，否则可能造成业务数据丢失。

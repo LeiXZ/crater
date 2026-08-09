@@ -18,18 +18,15 @@ import {
   apiAdminGetModelDownloadLimitConfig,
   apiAdminGetPodBandwidthConfig,
   apiAdminGetPrequeueConfig,
-  apiAdminGetStorageDecisionConfig,
   apiAdminGrantAllUsersExtraBalance,
   apiAdminResetAllBillingBalances,
   apiAdminResetLLMConfig,
-  apiAdminResetStorageDecisionConfig,
   apiAdminSetBillingStatus,
   apiAdminSetGpuAnalysisStatus,
   apiAdminUpdateLLMConfig,
   apiAdminUpdateModelDownloadLimitConfig,
   apiAdminUpdatePodBandwidthConfig,
   apiAdminUpdatePrequeueConfig,
-  apiAdminUpdateStorageDecisionConfig,
 } from '@/services/api/system-config'
 import { markApiErrorHandled } from '@/services/client'
 import { ERROR_RESOURCE_STATUS_ERROR } from '@/services/error_code'
@@ -44,13 +41,6 @@ import { LlmFormSchema, LlmSettings, createLlmSettingsSchema } from './-componen
 import { ModelDownloadLimitSettings } from './-components/model-download-limit-settings'
 import { PodBandwidthSettings } from './-components/pod-bandwidth-settings'
 import { PrequeueSettings } from './-components/prequeue-settings'
-import {
-  StorageDecisionFormSchema,
-  StorageDecisionSettings,
-  createStorageDecisionSettingsSchema,
-} from './-components/storage-decision-settings'
-
-const DEFAULT_STORAGE_BASE_URL = 'http://192.168.5.68:30186/v1'
 
 export const Route = createFileRoute('/admin/more/')({
   component: RouteComponent,
@@ -70,29 +60,10 @@ function RouteComponent() {
     },
   })
 
-  const storageDecisionForm = useForm<StorageDecisionFormSchema>({
-    resolver: zodResolver(createStorageDecisionSettingsSchema(t)),
-    defaultValues: {
-      decisionMode: 'agent',
-      configSource: 'platform',
-      baseUrl: DEFAULT_STORAGE_BASE_URL,
-      modelName: '',
-      apiKey: '',
-    },
-  })
-
   const { data: llmConfigData } = useQuery({
     queryKey: ['admin', 'system-config', 'llm'],
     queryFn: async () => {
       const res = await apiAdminGetLLMConfig()
-      return res.data
-    },
-  })
-
-  const { data: storageDecisionConfigData } = useQuery({
-    queryKey: ['admin', 'system-config', 'storage-decision'],
-    queryFn: async () => {
-      const res = await apiAdminGetStorageDecisionConfig()
       return res.data
     },
   })
@@ -152,20 +123,6 @@ function RouteComponent() {
   }, [llmConfigData, llmForm])
 
   useEffect(() => {
-    if (!storageDecisionConfigData) {
-      return
-    }
-
-    storageDecisionForm.reset({
-      decisionMode: storageDecisionConfigData.decisionMode || 'agent',
-      configSource: storageDecisionConfigData.configSource || 'platform',
-      baseUrl: storageDecisionConfigData.baseUrl || DEFAULT_STORAGE_BASE_URL,
-      modelName: storageDecisionConfigData.modelName || '',
-      apiKey: storageDecisionConfigData.apiKey || '',
-    })
-  }, [storageDecisionConfigData, storageDecisionForm])
-
-  useEffect(() => {
     if (!prequeueConfigData) {
       return
     }
@@ -220,43 +177,6 @@ function RouteComponent() {
     },
     onError: (error) =>
       handleBusinessLogicError(error, t('systemConfig.gpuAnalysis.error.llmCheckFailed')),
-  })
-
-  const updateStorageDecisionMutation = useMutation({
-    mutationFn: (vars: { data: StorageDecisionFormSchema; validate: boolean }) =>
-      apiAdminUpdateStorageDecisionConfig({
-        ...vars.data,
-        baseUrl: vars.data.baseUrl ?? '',
-        modelName: vars.data.modelName ?? '',
-        apiKey: vars.data.apiKey ?? '',
-        validate: vars.validate,
-      }),
-    onSuccess: (_, vars) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'system-config', 'storage-decision'] })
-      toast.success(
-        vars.validate
-          ? t('systemConfig.storageDecision.testAndSaveSuccess')
-          : t('systemConfig.storageDecision.saveSuccess')
-      )
-    },
-    onError: (error) =>
-      handleBusinessLogicError(
-        error,
-        t('systemConfig.storageDecision.error.connectionCheckFailed')
-      ),
-  })
-
-  const resetStorageDecisionMutation = useMutation({
-    mutationFn: apiAdminResetStorageDecisionConfig,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'system-config', 'storage-decision'] })
-      toast.success(t('common.resetSuccess'))
-    },
-    onError: (error) =>
-      handleBusinessLogicError(
-        error,
-        t('systemConfig.storageDecision.error.connectionCheckFailed')
-      ),
   })
 
   const toggleGpuMutation = useMutation({
@@ -382,10 +302,6 @@ function RouteComponent() {
     updateLLMMutation.mutate({ data: values, validate })
   }
 
-  const handleStorageDecisionSubmit = (values: StorageDecisionFormSchema, validate: boolean) => {
-    updateStorageDecisionMutation.mutate({ data: values, validate })
-  }
-
   const handleGpuToggle = async (checked: boolean) => {
     if (!checked) {
       toggleGpuMutation.mutate(false)
@@ -494,17 +410,6 @@ function RouteComponent() {
           onSave={(payload) => updateBillingMutation.mutate(payload)}
           onResetAll={() => resetAllBillingMutation.mutate()}
           onGrantAllExtra={(payload) => grantAllUsersExtraMutation.mutate(payload)}
-        />
-      </Card>
-
-      <Card>
-        <StorageDecisionSettings
-          form={storageDecisionForm}
-          isPending={
-            updateStorageDecisionMutation.isPending || resetStorageDecisionMutation.isPending
-          }
-          onSubmit={handleStorageDecisionSubmit}
-          onReset={() => resetStorageDecisionMutation.mutate()}
         />
       </Card>
     </div>

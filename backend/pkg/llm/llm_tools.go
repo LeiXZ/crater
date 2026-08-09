@@ -701,7 +701,9 @@ func HandleQueryPodGPUHistory(podName string, durationHours float64, promClient 
 // ---- Handler 实现 ----
 
 func HandleQueryPlatformCapacity(clientset kubernetes.Interface, restConfig *rest.Config) (string, error) {
-	totalCapacity, usedCapacity, err := ceph.GetCraterStorageCapacity(clientset, restConfig, "rook-ceph")
+	totalCapacity, usedCapacity, err := ceph.GetCraterStorageCapacity(
+		clientset, restConfig, config.GetConfig().Namespaces.Job,
+	)
 	if err != nil {
 		return "", fmt.Errorf("获取平台容量失败: %w", err)
 	}
@@ -920,7 +922,9 @@ func HandleQueryTenantStorageTrend(clientset kubernetes.Interface, restConfig *r
 		Account: cfg.Storage.Prefix.Account,
 		Public:  cfg.Storage.Prefix.Public,
 	}
-	currentUsage, err := ceph.GetCephDirectorySize(clientset, restConfig, "rook-ceph", "/user/"+user.Space, prefixConfig)
+	currentUsage, err := ceph.GetCephDirectorySize(
+		clientset, restConfig, ceph.StorageQuotaRookNamespace(), "/user/"+user.Space, prefixConfig,
+	)
 	if err != nil {
 		currentUsage = ceph.UnknownSizeBytes
 	}

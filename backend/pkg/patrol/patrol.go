@@ -4,6 +4,7 @@ package patrol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -21,7 +23,6 @@ import (
 	"github.com/raids-lab/crater/pkg/ceph"
 	"github.com/raids-lab/crater/pkg/config"
 	"github.com/raids-lab/crater/pkg/monitor"
-	"github.com/raids-lab/crater/pkg/storageindex"
 	"github.com/raids-lab/crater/pkg/util"
 )
 
@@ -30,13 +31,9 @@ const (
 	TRIGGER_GPU_ANALYSIS_JOB = "trigger-gpu-analysis-job"
 	// Billing 基础循环
 	TRIGGER_BILLING_BASE_LOOP_JOB = "biling-base-loop"
-	// 更新用户空间大小任务
-	UPDATE_USER_SPACE_SIZE = "update-user-space-size"
 	// 存储告警 AI 分析任务
 	ANALYZE_STORAGE_ALERTS         = "analyze-storage-alerts"
 	AUTO_SHRINK_STORAGE_EXPANSIONS = "auto-shrink-storage-expansions"
-	REFRESH_PUBLIC_STORAGE_INDEX   = "refresh-public-storage-index-baseline"
-	REFRESH_USER_STORAGE_INDEX     = "refresh-user-storage-index-daily"
 
 	// AI 分析最大并发数
 	defaultMaxConcurrentStorageAnalysis = 3
@@ -85,7 +82,6 @@ type Clients struct {
 	StorageAgent       StorageAgentFunc // 注入的 LLM 分析函数，nil 时跳过 AI 分析
 	StorageAgentStart  StorageAgentStartFunc
 	StorageAgentAwait  StorageAgentAwaitFunc
-	StorageIndex       *storageindex.Service
 }
 
 func storageAnalysisConcurrency() int {
@@ -126,15 +122,24 @@ func NewPatrolClients(
 	}
 }
 
-// RunUpdateUserSpaceSize 更新用户空间大小
-func RunUpdateUserSpaceSize(_ context.Context, clients *Clients) (any, error) {
-	var users []model.User
-	db := query.GetDB()
-	if err := db.Find(&users).Error; err != nil {
-		klog.Errorf("RunUpdateUserSpaceSize: 获取用户列表失败: %v", err)
-		return nil, fmt.Errorf("获取用户列表失败: %w", err)
+type StorageUsageRefreshResult struct {
+	Updated     int       `json:"updated"`
+	Failed      int       `json:"failed"`
+	RefreshedAt time.Time `json:"refreshed_at"`
+}
+
+// RefreshUserSpaceSizes refreshes the cached CephFS usage after an explicit admin request.
+func RefreshUserSpaceSizes(ctx context.Context, clients *Clients) (StorageUsageRefreshResult, error) {
+	refreshResult := StorageUsageRefreshResult{}
+	if !ceph.StorageQuotaEnabled() {
+		return refreshResult, fmt.Errorf("storage quota usage refresh is disabled")
 	}
-	klog.Infof("RunUpdateUserSpaceSize: 共有 %d 个用户", len(users))
+
+	var users []model.User
+	db := query.GetDB().WithContext(ctx)
+	if err := db.Find(&users).Error; err != nil {
+		return refreshResult, fmt.Errorf("list users for storage usage refresh: %w", err)
+	}
 
 	cfg := config.GetConfig()
 	prefixConfig := ceph.StoragePrefixConfig{
@@ -143,84 +148,58 @@ func RunUpdateUserSpaceSize(_ context.Context, clients *Clients) (any, error) {
 		Public:  cfg.Storage.Prefix.Public,
 	}
 
-	updatedCount := 0
 	for _, user := range users {
+		if err := ctx.Err(); err != nil {
+			return refreshResult, fmt.Errorf("storage usage refresh canceled: %w", err)
+		}
 		if user.Space == "" {
-			klog.Warningf("RunUpdateUserSpaceSize: 用户 %s 的空间路径为空，跳过", user.Name)
+			klog.Warningf("RefreshUserSpaceSizes: user %q has no storage space path", user.Name)
+			refreshResult.Failed++
 			continue
 		}
-		klog.Infof("RunUpdateUserSpaceSize: 正在获取用户 %s 的空间大小，路径: /user/%s", user.Name, user.Space)
 
-		size, err := ceph.GetCephDirectorySize(clients.KubeClient, clients.KubeConfig, "rook-ceph", "/user/"+user.Space, prefixConfig)
+		size, err := ceph.GetCephDirectorySize(
+			clients.KubeClient, clients.KubeConfig, ceph.StorageQuotaRookNamespace(), "/user/"+user.Space, prefixConfig,
+		)
 		if err != nil {
-			klog.Errorf("RunUpdateUserSpaceSize: 获取用户 %s 空间大小失败: %v", user.Name, err)
+			klog.Errorf("RefreshUserSpaceSizes: read usage for user %q: %v", user.Name, err)
+			refreshResult.Failed++
 			continue
-		}
-		klog.Infof("RunUpdateUserSpaceSize: 用户 %s 空间大小: %d bytes", user.Name, size)
-
-		// 检查是否需要记录历史数据
-		var lastHistory model.TenantUsageHistory
-		result := db.Where("tenant_id = ?", user.ID).Order("recorded_at DESC").First(&lastHistory)
-
-		// 检查是否需要插入新记录
-		needInsert := false
-		if result.Error != nil {
-			// 没有历史记录，需要插入
-			needInsert = true
-		} else {
-			// 检查字节数差异是否大于 100MB，或者时间超过 1 小时
-			byteDiff := size - lastHistory.UsageBytes
-			if byteDiff < 0 {
-				byteDiff = -byteDiff
-			}
-			timeDiff := time.Since(lastHistory.RecordedAt)
-			if byteDiff > 100*1024*1024 || timeDiff.Hours() > 1 {
-				needInsert = true
-			}
-		}
-
-		// 插入历史记录
-		if needInsert {
-			history := model.TenantUsageHistory{
-				TenantID:   user.ID,
-				UsageBytes: size,
-				RecordedAt: time.Now(),
-			}
-			if err := db.Create(&history).Error; err != nil {
-				klog.Errorf("RunUpdateUserSpaceSize: 记录用户 %s 空间大小历史失败: %v", user.Name, err)
-			} else {
-				klog.Infof("RunUpdateUserSpaceSize: 记录用户 %s 空间大小历史成功", user.Name)
-			}
 		}
 
 		var userSpaceSize model.UserSpaceSize
-		result = db.Where("user_id = ?", user.ID).First(&userSpaceSize)
-		if result.Error != nil {
+		result := db.Where("user_id = ?", user.ID).First(&userSpaceSize)
+		switch {
+		case errors.Is(result.Error, gorm.ErrRecordNotFound):
 			userSpaceSize = model.UserSpaceSize{
 				UserID:   user.ID,
 				Username: user.Name,
 				Size:     size,
 			}
 			if err := db.Create(&userSpaceSize).Error; err != nil {
-				klog.Errorf("RunUpdateUserSpaceSize: 创建用户 %s 空间大小记录失败: %v", user.Name, err)
+				klog.Errorf("RefreshUserSpaceSizes: create usage cache for user %q: %v", user.Name, err)
+				refreshResult.Failed++
 				continue
 			}
-			klog.Infof("RunUpdateUserSpaceSize: 创建用户 %s 空间大小记录成功", user.Name)
-		} else {
+		case result.Error != nil:
+			klog.Errorf("RefreshUserSpaceSizes: query usage cache for user %q: %v", user.Name, result.Error)
+			refreshResult.Failed++
+			continue
+		default:
 			userSpaceSize.Username = user.Name
 			userSpaceSize.Size = size
 			if err := db.Save(&userSpaceSize).Error; err != nil {
-				klog.Errorf("RunUpdateUserSpaceSize: 更新用户 %s 空间大小记录失败: %v", user.Name, err)
+				klog.Errorf("RefreshUserSpaceSizes: update usage cache for user %q: %v", user.Name, err)
+				refreshResult.Failed++
 				continue
 			}
-			klog.Infof("RunUpdateUserSpaceSize: 更新用户 %s 空间大小记录成功", user.Name)
 		}
 
-		updatedCount++
+		refreshResult.Updated++
 	}
 
-	klog.Infof("RunUpdateUserSpaceSize: 完成，共更新了 %d 个用户的空间大小", updatedCount)
-	return fmt.Sprintf("更新了 %d 个用户的空间大小", updatedCount), nil
+	refreshResult.RefreshedAt = time.Now()
+	return refreshResult, nil
 }
 
 // RunAnalyzeStorageAlerts 对超过90%理论配额且未临时扩容的用户并发执行 AI 分析，
@@ -303,7 +282,7 @@ func RunAnalyzeStorageAlerts(ctx context.Context, clients *Clients) (any, error)
 			}
 			if u.Space != "" {
 				if cephErr := ceph.SetCephDirectoryQuota(
-					clients.KubeClient, clients.KubeConfig, "rook-ceph",
+					clients.KubeClient, clients.KubeConfig, ceph.StorageQuotaRookNamespace(),
 					"/user/"+u.Space, prefixConfig, newQuota,
 				); cephErr != nil {
 					klog.Errorf("RunAnalyzeStorageAlerts: 用户 %s Ceph 配额同步失败: %v", u.Name, cephErr)
@@ -505,7 +484,7 @@ func RunAutoShrinkStorageExpansions(ctx context.Context, clients *Clients) (any,
 				if cephErr := ceph.SetCephDirectoryQuota(
 					clients.KubeClient,
 					clients.KubeConfig,
-					"rook-ceph",
+					ceph.StorageQuotaRookNamespace(),
 					"/user/"+user.Space,
 					prefixConfig,
 					bufferQuota,
@@ -547,7 +526,7 @@ func RunAutoShrinkStorageExpansions(ctx context.Context, clients *Clients) (any,
 				if cephErr := ceph.SetCephDirectoryQuota(
 					clients.KubeClient,
 					clients.KubeConfig,
-					"rook-ceph",
+					ceph.StorageQuotaRookNamespace(),
 					"/user/"+user.Space,
 					prefixConfig,
 					user.OriginalSpaceQuota,
@@ -587,45 +566,6 @@ func calculateShrinkBufferQuota(originalQuota, currentQuota int64) int64 {
 	return bufferQuota
 }
 
-func RunRefreshPublicStorageIndexBaseline(ctx context.Context, clients *Clients) (any, error) {
-	if clients.StorageIndex == nil {
-		return nil, fmt.Errorf("storage index service is not initialized in patrol clients")
-	}
-
-	job, err := clients.StorageIndex.RefreshPublicBaseline(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("refresh public storage index baseline failed: %w", err)
-	}
-
-	klog.Infof("RunRefreshPublicStorageIndexBaseline: scan_id=%s status=%s redundancy=%d",
-		job.ScanID, job.Status, job.RedundancyCount)
-
-	return map[string]any{
-		"scan_id":          job.ScanID,
-		"workspace_type":   job.WorkspaceType,
-		"workspace_name":   job.WorkspaceName,
-		"status":           job.Status,
-		"entry_count":      job.EntryCount,
-		"redundancy_count": job.RedundancyCount,
-	}, nil
-}
-
-func RunRefreshUserStorageIndexDaily(ctx context.Context, clients *Clients) (any, error) {
-	if clients.StorageIndex == nil {
-		return nil, fmt.Errorf("storage index service is not initialized in patrol clients")
-	}
-
-	result, err := clients.StorageIndex.RefreshAllUserWorkspaces(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("refresh user storage index daily failed: %w", err)
-	}
-
-	klog.Infof("RunRefreshUserStorageIndexDaily: total=%v success=%v failed=%v",
-		result["total"], result["success"], result["failed"])
-
-	return result, nil
-}
-
 func GetPatrolFunc(jobName string, clients *Clients, jobConfig datatypes.JSON) (util.AnyFunc, error) {
 	var f util.AnyFunc
 	switch jobName {
@@ -643,26 +583,6 @@ func GetPatrolFunc(jobName string, clients *Clients, jobConfig datatypes.JSON) (
 	case TRIGGER_BILLING_BASE_LOOP_JOB:
 		f = func(ctx context.Context) (any, error) {
 			return RunTriggerBillingBaseLoop(ctx, clients)
-		}
-	case UPDATE_USER_SPACE_SIZE:
-		f = func(ctx context.Context) (any, error) {
-			return RunUpdateUserSpaceSize(ctx, clients)
-		}
-	case ANALYZE_STORAGE_ALERTS:
-		f = func(ctx context.Context) (any, error) {
-			return RunAnalyzeStorageAlerts(ctx, clients)
-		}
-	case AUTO_SHRINK_STORAGE_EXPANSIONS:
-		f = func(ctx context.Context) (any, error) {
-			return RunAutoShrinkStorageExpansions(ctx, clients)
-		}
-	case REFRESH_PUBLIC_STORAGE_INDEX:
-		f = func(ctx context.Context) (any, error) {
-			return RunRefreshPublicStorageIndexBaseline(ctx, clients)
-		}
-	case REFRESH_USER_STORAGE_INDEX:
-		f = func(ctx context.Context) (any, error) {
-			return RunRefreshUserStorageIndexDaily(ctx, clients)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported patrol job name: %s", jobName)

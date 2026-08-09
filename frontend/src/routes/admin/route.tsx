@@ -1,5 +1,4 @@
 import { useQuery } from '@tanstack/react-query'
-// [新增]
 import { Outlet, createFileRoute, redirect, useLocation } from '@tanstack/react-router'
 import {
   AlarmClockIcon,
@@ -24,6 +23,7 @@ import AppLayout from '@/components/layout/app-layout'
 import { NavGroupProps } from '@/components/sidebar/types'
 
 import { Role } from '@/services/api/auth'
+import { apiAdminGetStorageCapabilities } from '@/services/api/storage'
 import { apiAdminGetGpuAnalysisStatus } from '@/services/api/system-config'
 
 export const Route = createFileRoute('/admin')({
@@ -45,15 +45,20 @@ export const Route = createFileRoute('/admin')({
 const useAdminSidebarGroups = (): NavGroupProps[] => {
   const { t } = useTranslation()
 
-  // [新增] 获取 GPU 分析功能的开启状态
   const { data: gpuStatus } = useQuery({
     queryKey: ['admin', 'system-config', 'gpu-status'],
     queryFn: () => apiAdminGetGpuAnalysisStatus().then((res) => res.data),
-    staleTime: 1000 * 60 * 5, // 建议设置缓存时间，避免每次点击侧边栏都请求
+    staleTime: 1000 * 60 * 5,
+  })
+  const { data: storageCapabilities } = useQuery({
+    queryKey: ['admin', 'storage', 'capabilities'],
+    queryFn: () => apiAdminGetStorageCapabilities().then((res) => res.data),
+    staleTime: 1000 * 60,
   })
 
-  // 判断是否开启
   const showGpuAnalysis = gpuStatus?.enabled ?? false
+  const showStorageManagement =
+    !!storageCapabilities?.quota_enabled && !!storageCapabilities?.usage_readable
 
   return [
     {
@@ -93,7 +98,7 @@ const useAdminSidebarGroups = (): NavGroupProps[] => {
         },
         {
           title: t('navigation.platformStatistics', { defaultValue: 'Platform Stats' }),
-          url: '/admin/statistics', // 指向刚才创建的路由
+          url: '/admin/statistics',
           icon: LayoutDashboard,
         },
       ],
@@ -111,7 +116,6 @@ const useAdminSidebarGroups = (): NavGroupProps[] => {
           url: '/admin/cronjobs',
           icon: AlarmClockIcon,
         },
-        // [修改] 条件渲染：只有开启时才把该对象加入数组
         ...(showGpuAnalysis
           ? [
               {
@@ -165,11 +169,15 @@ const useAdminSidebarGroups = (): NavGroupProps[] => {
           icon: FolderIcon,
           url: '/admin/files',
         },
-        {
-          title: t('navigation.storageManagement'),
-          icon: StoreIcon,
-          url: '/admin/storage',
-        },
+        ...(showStorageManagement
+          ? [
+              {
+                title: t('navigation.storageManagement'),
+                icon: StoreIcon,
+                url: '/admin/storage',
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -186,7 +194,7 @@ const useAdminSidebarGroups = (): NavGroupProps[] => {
           icon: ClipboardCheckIcon,
         },
         {
-          title: t('navigation.operationLogs', { defaultValue: '操作日志' }),
+          title: t('navigation.operationLogs'),
           url: '/admin/operation-logs',
           icon: ScrollText,
         },

@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { ColumnDef } from '@tanstack/react-table'
-import { BotMessageSquare, Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { RefreshCcw } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -29,34 +29,20 @@ import { DataTable } from '@/components/query-table'
 import { DataTableColumnHeader } from '@/components/query-table/column-header'
 
 import {
-  LLMDecisionResponse,
   PagedUserSpaces,
   UserSpace,
-  apiAdminApplyExpansion,
-  apiAdminFreezeJobs,
-  apiAdminGetLLMDecisionStatus,
+  apiAdminGetStorageCapabilities,
   apiAdminGetUserSpaces,
-  apiAdminRevertExpansion,
+  apiAdminRefreshUserSpaceUsage,
   apiAdminSetUserSpaceQuota,
-  apiAdminStartLLMDecision,
-  apiAdminUnfreezeJobs,
 } from '@/services/api/storage'
 import { IResponse } from '@/services/types'
 
-import StorageDirectoryComparePanel from './-components/storage-directory-compare-panel'
-import StorageGovernancePanel from './-components/storage-governance-panel'
-import StorageIndexPanel from './-components/storage-index-panel'
+import StorageQuotaAuditPanel from './-components/storage-governance-panel'
 
 export const Route = createFileRoute('/admin/storage/')({
   component: StorageManagementPage,
 })
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
-}
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (typeof error === 'object' && error !== null) {
@@ -69,17 +55,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
-function shrinkStageLabel(stage?: string): string {
-  switch (stage) {
-    case 'expanded':
-      return '扩容阶段'
-    case 'buffer_reduction':
-      return '缩容缓冲期'
-    default:
-      return '无'
-  }
-}
-
 const QUOTA_UNIT_BYTES = {
   B: 1,
   KB: 1024,
@@ -88,10 +63,13 @@ const QUOTA_UNIT_BYTES = {
   TB: 1024 ** 4,
 } as const
 
-function roundQuotaValue(value: number): number {
-  if (value >= 100) return Math.round(value)
-  if (value >= 10) return Number(value.toFixed(1))
-  return Number(value.toFixed(2))
+function quotaValueForBytes(bytes: number, unitBytes: number): number {
+  const rawValue = bytes / unitBytes
+  for (let precision = 0; precision <= 12; precision += 1) {
+    const candidate = Number(rawValue.toFixed(precision))
+    if (Math.round(candidate * unitBytes) === bytes) return candidate
+  }
+  return rawValue
 }
 
 function normalizeQuotaDisplay(value: number, unit: string): { value: number; unit: string } {
@@ -118,7 +96,7 @@ function normalizeQuotaDisplay(value: number, unit: string): { value: number; un
 
   const fallbackUnit = orderedUnits.find((candidate) => bytes >= QUOTA_UNIT_BYTES[candidate]) ?? 'B'
   return {
-    value: roundQuotaValue(bytes / QUOTA_UNIT_BYTES[fallbackUnit]),
+    value: quotaValueForBytes(bytes, QUOTA_UNIT_BYTES[fallbackUnit]),
     unit: fallbackUnit,
   }
 }
@@ -127,144 +105,61 @@ export default function StorageManagementPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
-  // 设置配额弹窗
+  // Quota confirmation dialog state.
   const [isQuotaDialogOpen, setIsQuotaDialogOpen] = useState(false)
   const [selectedUser, setSelectedUser] = useState<UserSpace | null>(null)
   const [quotaValue, setQuotaValue] = useState<number>(0)
   const [quotaUnit, setQuotaUnit] = useState<string>('GB')
 
-  // AI 决策弹窗
-  const [isLLMDialogOpen, setIsLLMDialogOpen] = useState(false)
-  const [llmUser, setLlmUser] = useState<string>('')
-  const [llmJobId, setLlmJobId] = useState<string | null>(null)
-  const [llmDecisionJobId, setLlmDecisionJobId] = useState<string | null>(null)
-  const [llmResult, setLlmResult] = useState<LLMDecisionResponse | null>(null)
+  const storageCapabilitiesQuery = useQuery({
+    queryKey: ['admin', 'storage', 'capabilities'],
+    queryFn: () => apiAdminGetStorageCapabilities().then((res) => res.data),
+    staleTime: 60 * 1000,
+  })
+  const storageCapabilities = storageCapabilitiesQuery.data
+  const usageAvailable =
+    !!storageCapabilities?.quota_enabled && !!storageCapabilities?.usage_readable
+  const quotaManagementAvailable = usageAvailable && !!storageCapabilities?.quota_writable
 
-  // 获取所有用户空间数据
+  // Load cached usage for all user spaces.
   const userSpacesQuery = useQuery({
     queryKey: ['admin', 'user-spaces'],
     queryFn: () =>
       apiAdminGetUserSpaces(1, 1000).then((res: IResponse<PagedUserSpaces>) => res.data.items),
+    enabled: usageAvailable,
     staleTime: 5 * 60 * 1000,
   })
 
-  // 设置配额 mutation
+  // Apply a quota only after explicit confirmation in the dialog.
   const setQuotaMutation = useMutation({
     mutationFn: ({ user, quota }: { user: string; quota: number }) =>
       apiAdminSetUserSpaceQuota(user, quota),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'user-spaces'] })
-      queryClient.invalidateQueries({ queryKey: ['admin', 'storage-decisions'] })
-      toast('理论配额设置成功')
+      queryClient.invalidateQueries({ queryKey: ['admin', 'storage-quota-audit'] })
+      toast.success(t('storageManagement.setQuotaSuccess'))
       setIsQuotaDialogOpen(false)
     },
     onError: (error: unknown) => {
-      toast.error(getErrorMessage(error, '设置配额失败'))
+      toast.error(getErrorMessage(error, t('storageManagement.setQuotaError')))
     },
   })
 
-  // 启动 AI 决策任务
-  const llmStartMutation = useMutation({
-    mutationFn: (user: string) => apiAdminStartLLMDecision(user),
-    onSuccess: (res) => {
-      setLlmJobId(res.data.job_id)
-      setLlmDecisionJobId(res.data.job_id)
-    },
-    onError: (error: unknown) => {
-      toast.error(getErrorMessage(error, 'AI 分析启动失败'))
-      setIsLLMDialogOpen(false)
-    },
-  })
-
-  // 应用临时扩容
-  const applyExpansionMutation = useMutation({
-    mutationFn: ({
-      user,
-      expandBytes,
-      freezeNewJobs,
-      decisionJobId,
-    }: {
-      user: string
-      expandBytes: number
-      freezeNewJobs: boolean
-      decisionJobId?: string
-    }) => apiAdminApplyExpansion(user, expandBytes, freezeNewJobs, decisionJobId),
-    onSuccess: (res) => {
+  const refreshUsageMutation = useMutation({
+    mutationFn: apiAdminRefreshUserSpaceUsage,
+    onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'user-spaces'] })
-      toast(
-        `已为 ${res.data.user} 临时扩容至 ${res.data.new_quota_formatted}（原配额 ${res.data.original_quota_formatted}）`
+      toast.success(
+        t('storageManagement.refreshSuccess', {
+          updated: response.data.updated,
+          failed: response.data.failed,
+        })
       )
-      setIsLLMDialogOpen(false)
     },
     onError: (error: unknown) => {
-      toast.error(getErrorMessage(error, '应用扩容失败'))
+      toast.error(getErrorMessage(error, t('storageManagement.refreshError')))
     },
   })
-
-  // 还原配额
-  const revertExpansionMutation = useMutation({
-    mutationFn: (user: string) => apiAdminRevertExpansion(user),
-    onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'user-spaces'] })
-      if (res.data.jobs_unfrozen) {
-        toast(`已还原 ${res.data.user} 配额至 ${res.data.reverted_quota_formatted}，作业限制已解除`)
-      } else {
-        toast.warning(
-          `已还原 ${res.data.user} 配额至 ${res.data.reverted_quota_formatted}，但存储用量仍超过理论配额，作业仍处于冻结状态`
-        )
-      }
-    },
-    onError: (error: unknown) => {
-      toast.error(getErrorMessage(error, '还原配额失败'))
-    },
-  })
-
-  // 手动解冻作业
-  const unfreezeJobsMutation = useMutation({
-    mutationFn: (user: string) => apiAdminUnfreezeJobs(user),
-    onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'user-spaces'] })
-      toast(`已解除 ${res.data.user} 的作业创建限制`)
-    },
-    onError: (error: unknown) => {
-      toast.error(getErrorMessage(error, '解冻失败'))
-    },
-  })
-
-  // 轮询任务状态（每 3 秒，直到完成）
-  const freezeJobsMutation = useMutation({
-    mutationFn: ({ user, decisionJobId }: { user: string; decisionJobId?: string }) =>
-      apiAdminFreezeJobs(user, decisionJobId),
-    onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'user-spaces'] })
-      queryClient.invalidateQueries({ queryKey: ['admin', 'storage-decisions'] })
-      toast(`已冻结 ${res.data.user} 的新作业创建权限`)
-      setIsLLMDialogOpen(false)
-    },
-    onError: (error: unknown) => {
-      toast.error(getErrorMessage(error, '冻结作业失败'))
-    },
-  })
-
-  const llmStatusQuery = useQuery({
-    queryKey: ['llm-decision', llmUser, llmJobId],
-    queryFn: () => apiAdminGetLLMDecisionStatus(llmUser, llmJobId!),
-    enabled: !!llmJobId,
-    refetchInterval: (query) => {
-      const status = query.state.data?.data?.status
-      return status === 'done' || status === 'error' ? false : 3000
-    },
-  })
-
-  // 轮询到结果后更新 UI
-  const jobStatus = llmStatusQuery.data?.data
-  useEffect(() => {
-    if (jobStatus?.status === 'done' && jobStatus.result) {
-      setLlmResult(jobStatus.result)
-      setLlmJobId(null)
-      void queryClient.invalidateQueries({ queryKey: ['admin', 'storage-decisions'] })
-    }
-  }, [jobStatus, queryClient])
 
   const convertToBytes = (value: number, unit: string): number => {
     switch (unit) {
@@ -296,6 +191,10 @@ export default function StorageManagementPage() {
     const normalized = normalizeQuotaDisplay(quotaValue, quotaUnit)
     const quotaInBytes =
       normalized.unit === 'unlimited' ? -1 : convertToBytes(normalized.value, normalized.unit)
+    if (quotaInBytes !== -1 && (!Number.isSafeInteger(quotaInBytes) || quotaInBytes <= 0)) {
+      toast.error(t('storageManagement.invalidQuota'))
+      return
+    }
     setQuotaMutation.mutate({ user: selectedUser.user, quota: quotaInBytes })
   }
 
@@ -304,101 +203,60 @@ export default function StorageManagementPage() {
     if (user.quota === -1) {
       setQuotaValue(0)
       setQuotaUnit('unlimited')
-    } else if (user.quota >= 1024 ** 4) {
-      setQuotaValue(Math.round(user.quota / 1024 ** 4))
-      setQuotaUnit('TB')
-    } else if (user.quota >= 1024 ** 3) {
-      setQuotaValue(Math.round(user.quota / 1024 ** 3))
-      setQuotaUnit('GB')
-    } else if (user.quota >= 1024 ** 2) {
-      setQuotaValue(Math.round(user.quota / 1024 ** 2))
-      setQuotaUnit('MB')
-    } else if (user.quota >= 1024) {
-      setQuotaValue(Math.round(user.quota / 1024))
-      setQuotaUnit('KB')
     } else {
-      setQuotaValue(user.quota)
-      setQuotaUnit('B')
+      const normalized = normalizeQuotaDisplay(user.quota, 'B')
+      setQuotaValue(normalized.value)
+      setQuotaUnit(normalized.unit)
     }
     setIsQuotaDialogOpen(true)
   }
 
-  const openLLMDialog = (user: UserSpace) => {
-    setLlmUser(user.user)
-    setLlmResult(null)
-    setLlmJobId(null)
-    setLlmDecisionJobId(null)
-    setIsLLMDialogOpen(true)
-    llmStartMutation.mutate(user.user)
-  }
-
-  const columns: ColumnDef<UserSpace>[] = [
+  const usageColumns: ColumnDef<UserSpace>[] = [
     {
       accessorKey: 'user',
-      header: ({ column }) => <DataTableColumnHeader column={column} title="用户" />,
-      cell: ({ row }) => (
-        <span className="flex items-center gap-2">
-          {row.getValue('user')}
-          {row.original.jobs_frozen && (
-            <Badge className="border-red-300 bg-red-100 text-xs text-red-700">作业已冻结</Badge>
-          )}
-          {row.original.shrink_stage === 'buffer_reduction' && (
-            <Badge className="border-sky-300 bg-sky-100 text-xs text-sky-700">缩容缓冲期</Badge>
-          )}
-        </span>
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('storageManagement.user')} />
       ),
     },
     {
       accessorKey: 'size',
-      header: ({ column }) => <DataTableColumnHeader column={column} title="已用空间" />,
-      cell: ({ row }) => row.original.formatted,
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('storageManagement.usedSpace')} />
+      ),
+      cell: ({ row }) =>
+        row.original.size < 0 ? t('storageManagement.usagePending') : row.original.formatted,
     },
     {
-      accessorKey: 'shrink_stage',
-      header: ({ column }) => <DataTableColumnHeader column={column} title="当前缩容状态" />,
-      cell: ({ row }) => {
-        const stage = row.original.shrink_stage
-        if (!stage) return '无'
-        const badgeClass =
-          stage === 'buffer_reduction'
-            ? 'border-sky-300 bg-sky-100 text-xs text-sky-700'
-            : 'border-amber-300 bg-amber-100 text-xs text-amber-700'
-        return <Badge className={badgeClass}>{shrinkStageLabel(stage)}</Badge>
-      },
+      accessorKey: 'updated_at',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('storageManagement.refreshedAt')} />
+      ),
+      cell: ({ row }) =>
+        row.original.updated_at
+          ? new Date(row.original.updated_at).toLocaleString()
+          : t('storageManagement.neverRefreshed'),
     },
-    {
-      accessorKey: 'original_quota',
-      header: ({ column }) => <DataTableColumnHeader column={column} title="理论配额" />,
-      cell: ({ row }) => {
-        const { quota, quota_formatted, is_expanded, original_quota_formatted } = row.original
-        if (quota === -1 && !is_expanded) return '无限制'
-        return is_expanded ? original_quota_formatted : quota_formatted
-      },
-    },
+  ]
+
+  const quotaColumns: ColumnDef<UserSpace>[] = [
     {
       accessorKey: 'quota',
-      header: ({ column }) => <DataTableColumnHeader column={column} title="现配额" />,
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('storageManagement.quota')} />
+      ),
       cell: ({ row }) => {
-        const { quota, quota_formatted, is_expanded } = row.original
-        if (quota === -1) return '无限制'
-        return is_expanded ? (
-          <span className="flex items-center gap-1">
-            {quota_formatted}
-            <Badge className="border-orange-300 bg-orange-100 text-xs text-orange-700">
-              临时扩容
-            </Badge>
-          </span>
-        ) : (
-          quota_formatted
-        )
+        const { quota, quota_formatted } = row.original
+        return quota === -1 ? t('storageManagement.unlimited') : quota_formatted
       },
     },
     {
       accessorKey: 'usage_ratio',
-      header: ({ column }) => <DataTableColumnHeader column={column} title="使用率" />,
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('storageManagement.usageRatio')} />
+      ),
       cell: ({ row }) => {
         const { size, quota } = row.original
-        if (quota === -1 || quota === 0) return '—'
+        if (size < 0 || quota <= 0) return '-'
         const ratio = (size / quota) * 100
         const color =
           ratio >= 90
@@ -411,224 +269,123 @@ export default function StorageManagementPage() {
     },
     {
       accessorKey: 'actions',
-      header: '操作',
+      header: t('storageManagement.actions'),
       cell: ({ row }) => {
         const user = row.original
         return (
           <div className="flex gap-2">
             <Button variant="ghost" size="sm" onClick={() => openSetQuotaDialog(user)}>
-              设置配额
-            </Button>
-            {user.is_expanded && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-orange-600 hover:text-orange-700"
-                disabled={revertExpansionMutation.isPending}
-                onClick={() => revertExpansionMutation.mutate(user.user)}
-              >
-                还原配额
-              </Button>
-            )}
-            {user.jobs_frozen && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-red-600 hover:text-red-700"
-                disabled={unfreezeJobsMutation.isPending}
-                onClick={() => unfreezeJobsMutation.mutate(user.user)}
-              >
-                解冻作业
-              </Button>
-            )}
-            <Button variant="ghost" size="sm" onClick={() => openLLMDialog(user)}>
-              <BotMessageSquare className="mr-1 h-4 w-4" />
-              AI 建议
+              {t('storageManagement.setQuota')}
             </Button>
           </div>
         )
       },
     },
   ]
+  const columns = quotaManagementAvailable ? [...usageColumns, ...quotaColumns] : usageColumns
 
   return (
     <>
-      <DataTable
-        info={{
-          title: t('navigation.storageManagement'),
-          description: '用户空间使用情况',
-        }}
-        storageKey="admin-storage"
-        query={userSpacesQuery}
-        columns={columns}
-      />
-      <StorageIndexPanel />
-      <StorageDirectoryComparePanel />
-      <StorageGovernancePanel />
+      {usageAvailable ? (
+        <DataTable
+          info={{
+            title: t('navigation.storageManagement'),
+            description: quotaManagementAvailable
+              ? t('storageManagement.description')
+              : t('storageManagement.readOnlyDescription'),
+          }}
+          storageKey="admin-storage"
+          query={userSpacesQuery}
+          columns={columns}
+        >
+          <Button
+            variant="outline"
+            onClick={() => refreshUsageMutation.mutate()}
+            disabled={refreshUsageMutation.isPending}
+          >
+            <RefreshCcw
+              className={`mr-2 h-4 w-4 ${refreshUsageMutation.isPending ? 'animate-spin' : ''}`}
+            />
+            {refreshUsageMutation.isPending
+              ? t('storageManagement.refreshingUsage')
+              : t('storageManagement.refreshUsage')}
+          </Button>
+        </DataTable>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('navigation.storageManagement')}</CardTitle>
+            <CardDescription>{t('storageManagement.unavailable')}</CardDescription>
+          </CardHeader>
+          <CardContent className="text-muted-foreground text-sm">
+            {storageCapabilitiesQuery.isLoading
+              ? t('storageManagement.detecting')
+              : storageCapabilities?.reasons?.join('; ') || t('storageManagement.requirements')}
+          </CardContent>
+        </Card>
+      )}
+      {quotaManagementAvailable && <StorageQuotaAuditPanel />}
 
-      {/* 设置配额弹窗 */}
-      <Dialog open={isQuotaDialogOpen} onOpenChange={setIsQuotaDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>设置理论配额 - {selectedUser?.user}</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            {selectedUser?.is_expanded && (
-              <p className="text-muted-foreground text-sm">
-                该用户当前有临时扩容，此处修改的是理论配额，现配额 ({selectedUser.quota_formatted})
-                保持不变，还原扩容时将恢复为新设的理论配额。
-              </p>
-            )}
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="quota" className="text-right">
-                理论配额
-              </Label>
-              <Input
-                id="quota"
-                type="number"
-                min={0}
-                step="any"
-                value={quotaValue}
-                onChange={(e) => setQuotaValue(Number(e.target.value))}
-                onBlur={alignQuotaInput}
-                disabled={quotaUnit === 'unlimited'}
-              />
-              <Select value={quotaUnit} onValueChange={setQuotaUnit}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选择单位" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="unlimited">无限制</SelectItem>
-                  <SelectItem value="TB">TB</SelectItem>
-                  <SelectItem value="GB">GB</SelectItem>
-                  <SelectItem value="MB">MB</SelectItem>
-                  <SelectItem value="KB">KB</SelectItem>
-                  <SelectItem value="B">B</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="text-muted-foreground text-sm">
-              当前已用空间: {selectedUser?.formatted}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              onClick={handleSetQuota}
-              disabled={setQuotaMutation.isPending || !selectedUser}
-            >
-              {setQuotaMutation.isPending ? '设置中...' : '设置配额'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* AI 决策弹窗 */}
-      <Dialog open={isLLMDialogOpen} onOpenChange={setIsLLMDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <BotMessageSquare className="h-5 w-5" />
-              AI 存储建议 — {llmUser}
-            </DialogTitle>
-          </DialogHeader>
-
-          {(llmStartMutation.isPending || !!llmJobId) && !llmResult && (
-            <div className="text-muted-foreground flex flex-col items-center gap-3 py-8">
-              <Loader2 className="h-8 w-8 animate-spin" />
-              <p className="text-sm">AI 正在分析存储情况，请稍候（约 10~30 秒）...</p>
-            </div>
-          )}
-
-          {llmResult && (
-            <div className="space-y-4 py-2">
-              <div className="flex items-center gap-3">
-                <span className="w-24 text-sm font-medium">扩容建议</span>
-                {llmResult.allow_expand ? (
-                  <Badge className="border-green-300 bg-green-100 text-green-700">建议扩容</Badge>
-                ) : (
-                  <Badge className="border-red-300 bg-red-100 text-red-700">无需扩容</Badge>
-                )}
+      {quotaManagementAvailable && (
+        <Dialog open={isQuotaDialogOpen} onOpenChange={setIsQuotaDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {t('storageManagement.setQuotaFor', { user: selectedUser?.user })}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="quota" className="text-right">
+                  {t('storageManagement.quota')}
+                </Label>
+                <Input
+                  id="quota"
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={quotaValue}
+                  onChange={(e) => setQuotaValue(Number(e.target.value))}
+                  onBlur={alignQuotaInput}
+                  disabled={quotaUnit === 'unlimited'}
+                />
+                <Select value={quotaUnit} onValueChange={setQuotaUnit}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('storageManagement.selectUnit')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unlimited">{t('storageManagement.unlimited')}</SelectItem>
+                    <SelectItem value="TB">TB</SelectItem>
+                    <SelectItem value="GB">GB</SelectItem>
+                    <SelectItem value="MB">MB</SelectItem>
+                    <SelectItem value="KB">KB</SelectItem>
+                    <SelectItem value="B">B</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-
-              {llmResult.allow_expand && llmResult.expand_bytes > 0 && (
-                <div className="flex items-center gap-3">
-                  <span className="w-24 text-sm font-medium">建议扩容量</span>
-                  <span className="text-sm">{formatBytes(llmResult.expand_bytes)}</span>
-                </div>
-              )}
-
-              <div className="flex items-center gap-3">
-                <span className="w-24 text-sm font-medium">暂停新任务</span>
-                {llmResult.freeze_new_jobs ? (
-                  <Badge className="border-yellow-300 bg-yellow-100 text-yellow-700">
-                    建议暂停
-                  </Badge>
-                ) : (
-                  <Badge variant="outline">无需暂停</Badge>
-                )}
-              </div>
-
-              <div className="space-y-1">
-                <span className="text-sm font-medium">决策理由</span>
-                <p className="text-muted-foreground bg-muted rounded-md p-3 text-sm leading-relaxed">
-                  {llmResult.reason}
-                </p>
+              <div className="text-muted-foreground text-sm">
+                {t('storageManagement.currentUsage', {
+                  usage:
+                    selectedUser && selectedUser.size >= 0
+                      ? selectedUser.formatted
+                      : t('storageManagement.usagePending'),
+                })}
               </div>
             </div>
-          )}
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsLLMDialogOpen(false)}>
-              关闭
-            </Button>
-            {llmResult && (
+            <DialogFooter>
               <Button
-                variant="outline"
-                onClick={() => {
-                  setLlmResult(null)
-                  setLlmJobId(null)
-                  setLlmDecisionJobId(null)
-                  llmStartMutation.mutate(llmUser)
-                }}
-                disabled={llmStartMutation.isPending || !!llmJobId}
+                type="button"
+                onClick={handleSetQuota}
+                disabled={setQuotaMutation.isPending || !selectedUser}
               >
-                重新分析
+                {setQuotaMutation.isPending
+                  ? t('storageManagement.settingQuota')
+                  : t('storageManagement.setQuota')}
               </Button>
-            )}
-            {llmResult?.allow_expand && llmResult.expand_bytes > 0 && (
-              <Button
-                onClick={() =>
-                  applyExpansionMutation.mutate({
-                    user: llmUser,
-                    expandBytes: llmResult.expand_bytes,
-                    freezeNewJobs: llmResult.freeze_new_jobs,
-                    decisionJobId: llmDecisionJobId ?? undefined,
-                  })
-                }
-                disabled={applyExpansionMutation.isPending}
-              >
-                {applyExpansionMutation.isPending
-                  ? '应用中...'
-                  : `应用扩容 +${formatBytes(llmResult.expand_bytes)}${llmResult.freeze_new_jobs ? '（含冻结作业）' : ''}`}
-              </Button>
-            )}
-            {llmResult?.freeze_new_jobs && !llmResult.allow_expand && (
-              <Button
-                onClick={() =>
-                  freezeJobsMutation.mutate({
-                    user: llmUser,
-                    decisionJobId: llmDecisionJobId ?? undefined,
-                  })
-                }
-                disabled={freezeJobsMutation.isPending}
-              >
-                {freezeJobsMutation.isPending ? '冻结中...' : '执行冻结'}
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   )
 }

@@ -1573,6 +1573,9 @@ func main() {
 			},
 		},
 		modelDownloadSubmissionMigration(),
+		storageGovernanceMigration(),
+		storageGovernanceAutomationCleanupMigration(),
+		storageUsageManualRefreshMigration(),
 	})
 
 	m.InitSchema(func(tx *gorm.DB) error {
@@ -1609,6 +1612,9 @@ func main() {
 			&model.PrequeueConfig{},
 			&model.QueueQuotaLimit{},
 			&model.UserBanRecord{},
+			&model.UserSpaceSize{},
+			&model.TenantUsageHistory{},
+			&model.StorageDecisionRecord{},
 		)
 		if err != nil {
 			return err
@@ -1732,6 +1738,169 @@ func main() {
 
 	if err := m.Migrate(); err != nil {
 		panic(fmt.Errorf("could not migrate: %w", err))
+	}
+}
+
+func storageGovernanceMigration() *gormigrate.Migration {
+	type userStorageColumns struct {
+		SpaceQuota           int64      `gorm:"type:bigint;default:-1"`
+		OriginalSpaceQuota   *int64     `gorm:"type:bigint;default:null"`
+		JobsFrozen           bool       `gorm:"type:boolean;default:false"`
+		ShrinkStage          *string    `gorm:"type:varchar(64);default:null"`
+		ShrinkStageUpdatedAt *time.Time `gorm:"default:null"`
+	}
+
+	return &gormigrate.Migration{
+		ID: "202608020001",
+		Migrate: func(tx *gorm.DB) error {
+			if err := tx.AutoMigrate(
+				&model.UserSpaceSize{},
+				&model.TenantUsageHistory{},
+				&model.StorageDecisionRecord{},
+			); err != nil {
+				return err
+			}
+
+			migrator := tx.Table("users").Migrator()
+			for _, field := range []string{
+				"SpaceQuota",
+				"OriginalSpaceQuota",
+				"JobsFrozen",
+				"ShrinkStage",
+				"ShrinkStageUpdatedAt",
+			} {
+				if migrator.HasColumn(&userStorageColumns{}, field) {
+					continue
+				}
+				if err := migrator.AddColumn(&userStorageColumns{}, field); err != nil {
+					return err
+				}
+			}
+
+			jobs := []model.CronJobConfig{
+				{
+					Name:    "update-user-space-size",
+					Type:    model.CronJobTypePatrolFunc,
+					Spec:    "*/30 * * * *",
+					Status:  model.CronJobConfigStatusIdle,
+					Config:  datatypes.JSON(`{}`),
+					EntryID: -1,
+				},
+			}
+			for i := range jobs {
+				if err := tx.Where("name = ?", jobs[i].Name).FirstOrCreate(&jobs[i]).Error; err != nil {
+					return err
+				}
+			}
+
+			return tx.Table("cron_job_configs").
+				Where("name IN ?", []string{
+					"refresh-public-storage-index-baseline",
+					"refresh-user-storage-index-daily",
+					"analyze-storage-alerts",
+					"auto-shrink-storage-expansions",
+				}).
+				Delete(nil).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			if err := tx.Table("cron_job_configs").
+				Where("name IN ?", []string{
+					"update-user-space-size",
+				}).
+				Delete(nil).Error; err != nil {
+				return err
+			}
+
+			migrator := tx.Table("users").Migrator()
+			for _, field := range []string{
+				"ShrinkStageUpdatedAt",
+				"ShrinkStage",
+				"JobsFrozen",
+				"OriginalSpaceQuota",
+				"SpaceQuota",
+			} {
+				if migrator.HasColumn(&userStorageColumns{}, field) {
+					if err := migrator.DropColumn(&userStorageColumns{}, field); err != nil {
+						return err
+					}
+				}
+			}
+
+			return tx.Migrator().DropTable(
+				&model.StorageDecisionRecord{},
+				&model.TenantUsageHistory{},
+				&model.UserSpaceSize{},
+			)
+		},
+	}
+}
+
+func storageGovernanceAutomationCleanupMigration() *gormigrate.Migration {
+	jobNames := []string{
+		"update-user-space-size",
+		"analyze-storage-alerts",
+		"auto-shrink-storage-expansions",
+	}
+
+	return &gormigrate.Migration{
+		ID: "202608080001",
+		Migrate: func(tx *gorm.DB) error {
+			return tx.Table("cron_job_configs").Where("name IN ?", jobNames).Delete(nil).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			jobs := []model.CronJobConfig{
+				{
+					Name:    "update-user-space-size",
+					Type:    model.CronJobTypePatrolFunc,
+					Spec:    "*/30 * * * *",
+					Status:  model.CronJobConfigStatusIdle,
+					Config:  datatypes.JSON(`{}`),
+					EntryID: -1,
+				},
+				{
+					Name:    "analyze-storage-alerts",
+					Type:    model.CronJobTypePatrolFunc,
+					Spec:    "*/30 * * * *",
+					Status:  model.CronJobConfigStatusSuspended,
+					Config:  datatypes.JSON(`{}`),
+					EntryID: -1,
+				},
+				{
+					Name:    "auto-shrink-storage-expansions",
+					Type:    model.CronJobTypePatrolFunc,
+					Spec:    "0 * * * *",
+					Status:  model.CronJobConfigStatusSuspended,
+					Config:  datatypes.JSON(`{}`),
+					EntryID: -1,
+				},
+			}
+			for i := range jobs {
+				if err := tx.Where("name = ?", jobs[i].Name).FirstOrCreate(&jobs[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func storageUsageManualRefreshMigration() *gormigrate.Migration {
+	return &gormigrate.Migration{
+		ID: "202608090001",
+		Migrate: func(tx *gorm.DB) error {
+			return tx.Table("cron_job_configs").Where("name = ?", "update-user-space-size").Delete(nil).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			job := model.CronJobConfig{
+				Name:    "update-user-space-size",
+				Type:    model.CronJobTypePatrolFunc,
+				Spec:    "*/30 * * * *",
+				Status:  model.CronJobConfigStatusIdle,
+				Config:  datatypes.JSON(`{}`),
+				EntryID: -1,
+			}
+			return tx.Where("name = ?", job.Name).FirstOrCreate(&job).Error
+		},
 	}
 }
 

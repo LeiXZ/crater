@@ -162,7 +162,7 @@ func (e *Engine) BuildSnapshot(ctx context.Context, username string) (DecisionSn
 	currentUsage, err := ceph.GetCephDirectorySize(
 		e.kubeClient,
 		e.kubeConfig,
-		"rook-ceph",
+		ceph.StorageQuotaRookNamespace(),
 		"/user/"+userRow.Space,
 		prefixConfig,
 	)
@@ -175,7 +175,9 @@ func (e *Engine) BuildSnapshot(ctx context.Context, username string) (DecisionSn
 		theoreticalQuota = *userRow.OriginalSpaceQuota
 	}
 
-	totalCapacity, usedCapacity, err := ceph.GetCraterStorageCapacity(e.kubeClient, e.kubeConfig, "rook-ceph")
+	totalCapacity, usedCapacity, err := ceph.GetCraterStorageCapacity(
+		e.kubeClient, e.kubeConfig, cfg.Namespaces.Job,
+	)
 	if err != nil {
 		return DecisionSnapshot{}, fmt.Errorf("get platform capacity failed: %w", err)
 	}

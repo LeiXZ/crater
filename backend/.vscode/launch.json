@@ -16,6 +16,8 @@
                 "${workspaceFolder}/etc/debug-config.yaml"
             ],
             "env": {
+                "GOCACHE": "${workspaceFolder}/.gocache",
+                "GOTOOLCHAIN": "go1.25.4",
                 "KUBECONFIG": "${env:HOME}/.kube/config",
                 "NO_PROXY": "k8s.cluster.master"
             }
@@ -32,6 +34,8 @@
                 "${workspaceFolder}/etc/debug-config-actgpu.yaml"
             ],
             "env": {
+                "GOCACHE": "${workspaceFolder}/.gocache",
+                "GOTOOLCHAIN": "go1.25.4",
                 "KUBECONFIG": "${workspaceFolder}/kubeconfig_act"
             }
         },
@@ -47,6 +51,8 @@
                 "${workspaceFolder}/etc/debug-config-little.yaml"
             ],
             "env": {
+                "GOCACHE": "${workspaceFolder}/.gocache",
+                "GOTOOLCHAIN": "go1.25.4",
                 "KUBECONFIG": "${workspaceFolder}/kubeconfig_little"
             }
         },
@@ -62,6 +68,8 @@
                 "${workspaceFolder}/etc/debug-config-ali.yaml"
             ],
             "env": {
+                "GOCACHE": "${workspaceFolder}/.gocache",
+                "GOTOOLCHAIN": "go1.25.4",
                 "KUBECONFIG": "${workspaceFolder}/kubeconfig_ali"
             }
         }

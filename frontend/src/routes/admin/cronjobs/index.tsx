@@ -80,30 +80,6 @@ const JOB_CONFIGS = [
     jobType: 'patrol_function',
   },
   {
-    jobId: 'update-user-space-size',
-    jobName: 'cronPolicy.updateUserSpaceSizeTitle',
-    jobDescription: 'cronPolicy.updateUserSpaceSizeDesc',
-    jobType: 'patrol_function',
-  },
-  {
-    jobId: 'analyze-storage-alerts',
-    jobName: 'cronPolicy.analyzeStorageAlertsTitle',
-    jobDescription: 'cronPolicy.analyzeStorageAlertsDesc',
-    jobType: 'patrol_function',
-  },
-  {
-    jobId: 'refresh-public-storage-index-baseline',
-    jobName: 'cronPolicy.refreshPublicStorageIndexTitle',
-    jobDescription: 'cronPolicy.refreshPublicStorageIndexDesc',
-    jobType: 'patrol_function',
-  },
-  {
-    jobId: 'refresh-user-storage-index-daily',
-    jobName: 'cronPolicy.refreshUserStorageIndexTitle',
-    jobDescription: 'cronPolicy.refreshUserStorageIndexDesc',
-    jobType: 'patrol_function',
-  },
-  {
     jobId: 'biling-base-loop',
     jobName: 'cronPolicy.billingBaseLoopTitle',
     jobType: 'patrol_function',

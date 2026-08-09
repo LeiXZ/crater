@@ -30,8 +30,10 @@ import {
   DirectorySize,
   FileItem,
   MyQuota,
+  StorageCapabilities,
   apiGetDirectorySize,
   apiGetMyQuota,
+  apiGetStorageCapabilities,
 } from '@/services/api/file'
 
 import { atomUserContext } from '@/utils/store'
@@ -82,13 +84,24 @@ export default function FolderNavigation({
   const [publicSpaceSize, setPublicSpaceSize] = useState<DirectorySize | null>(null)
   const [accountSpaceSize, setAccountSpaceSize] = useState<DirectorySize | null>(null)
   const [myQuota, setMyQuota] = useState<MyQuota | null>(null)
+  const [storageCapabilities, setStorageCapabilities] = useState<StorageCapabilities | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  // 获取空间大小和用户配额
+  // Load storage usage and the current user's quota.
   useEffect(() => {
     const fetchSpaceSizes = async () => {
       setIsLoading(true)
       try {
+        const capability = await apiGetStorageCapabilities().then((r) => r.data)
+        setStorageCapabilities(capability ?? null)
+        if (!capability?.usage_readable) {
+          setUserSpaceSize(null)
+          setPublicSpaceSize(null)
+          setAccountSpaceSize(null)
+          setMyQuota(null)
+          return
+        }
+
         const promises: Promise<void>[] = []
 
         if (context?.space) {
@@ -141,7 +154,7 @@ export default function FolderNavigation({
     fetchSpaceSizes()
   }, [context?.space])
 
-  // 对文件夹进行排序，公共 -> 账户 -> 用户
+  // Keep the public, account, and user folders in a predictable order.
   const sortFolders = (folders: FileItem[]) => {
     return folders.sort((a, b) => {
       if (isPublicFolder(a.name)) {
@@ -192,13 +205,13 @@ export default function FolderNavigation({
   }
 
   const getBadgeText = (folder: string, mode: AccessMode) => {
-    if (isUserFolder(folder)) return t('folderNavigation.badge.private', '私有')
-    if (mode === AccessMode.ReadOnly) return t('folderNavigation.badge.readOnly', '只读')
-    if (mode === AccessMode.ReadWrite) return t('folderNavigation.badge.readWrite', '读写')
-    return t('folderNavigation.badge.noAccess', '无权限')
+    if (isUserFolder(folder)) return t('folderNavigation.badge.private')
+    if (mode === AccessMode.ReadOnly) return t('folderNavigation.badge.readOnly')
+    if (mode === AccessMode.ReadWrite) return t('folderNavigation.badge.readWrite')
+    return t('folderNavigation.badge.noAccess')
   }
 
-  // 格式化文件大小，自动选择合适的单位
+  // Format byte counts using the most readable binary unit.
   const formatFileSize = (bytes: number): { size: string; unit: string } => {
     if (!Number.isFinite(bytes) || bytes <= 0) return { size: '0', unit: 'B' }
     const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -210,7 +223,7 @@ export default function FolderNavigation({
     }
   }
 
-  // 根据 space 类型返回当前大小和配额（bytes）；quota=-1 表示无限制，null 表示共享空间无独立配额
+  // quota=-1 is unlimited; null means the shared space has no independent quota.
   const getSpaceMetrics = (
     spaceType: string
   ): {
@@ -275,7 +288,7 @@ export default function FolderNavigation({
         title={t('folderNavigation.pageTitle.title')}
         description={t('folderNavigation.pageTitle.description')}
       >
-        <DocsButton title="阅读文档" url="file/file/" />
+        <DocsButton title={t('folderNavigation.readDocs')} url="file/file/" />
       </PageTitle>
       <div
         className={cn('mt-6 grid gap-6', {
@@ -336,95 +349,108 @@ export default function FolderNavigation({
                   </p>
                 </div>
                 {/* Usage Metrics */}
-                {(() => {
-                  const {
-                    size,
-                    quota,
-                    sizeUnit,
-                    formattedSize: apiFormattedSize,
-                  } = getSpaceMetrics(type)
-                  const displaySize =
-                    typeof size === 'number' && Number.isFinite(size) ? Math.max(0, size) : null
-                  const hasQuota = quota !== null && quota > 0
-                  const isUnlimited = quota === -1
-                  const usageRatio =
-                    hasQuota && displaySize !== null
-                      ? Math.min(100, (displaySize / quota!) * 100)
-                      : null
+                {storageCapabilities?.usage_readable &&
+                  (() => {
+                    const {
+                      size,
+                      quota,
+                      sizeUnit,
+                      formattedSize: apiFormattedSize,
+                    } = getSpaceMetrics(type)
+                    const displaySize =
+                      typeof size === 'number' && Number.isFinite(size) ? Math.max(0, size) : null
+                    const hasQuota = quota !== null && quota > 0
+                    const isUnlimited = quota === -1
+                    const usageRatio =
+                      hasQuota && displaySize !== null
+                        ? Math.min(100, (displaySize / quota!) * 100)
+                        : null
 
-                  // 使用API返回的格式化大小，如果没有则使用formatFileSize计算
-                  let formattedSize: { size: string; unit: string } | null = null
-                  if (apiFormattedSize) {
-                    // 从API返回的格式化字符串中提取大小和单位
-                    const match = apiFormattedSize.match(/([\d.]+)\s*(\w+)/)
-                    if (match) {
-                      formattedSize = { size: match[1], unit: match[2] }
+                    // Prefer the server-formatted size and fall back to local formatting.
+                    let formattedSize: { size: string; unit: string } | null = null
+                    if (apiFormattedSize) {
+                      // Split the server-formatted value for the existing visual treatment.
+                      const match = apiFormattedSize.match(/([\d.]+)\s*(\w+)/)
+                      if (match) {
+                        formattedSize = { size: match[1], unit: match[2] }
+                      }
+                    } else if (displaySize !== null) {
+                      if (sizeUnit) {
+                        formattedSize = { size: displaySize.toFixed(2), unit: sizeUnit }
+                      } else {
+                        formattedSize = formatFileSize(displaySize)
+                      }
                     }
-                  } else if (displaySize !== null) {
-                    if (sizeUnit) {
-                      formattedSize = { size: displaySize.toFixed(2), unit: sizeUnit }
-                    } else {
-                      formattedSize = formatFileSize(displaySize)
+
+                    let formattedQuota: { size: string; unit: string } | null = null
+                    if (hasQuota && quota !== null) {
+                      formattedQuota = formatFileSize(quota)
                     }
-                  }
 
-                  let formattedQuota: { size: string; unit: string } | null = null
-                  if (hasQuota && quota !== null) {
-                    formattedQuota = formatFileSize(quota)
-                  }
-
-                  return (
-                    <div className={`rounded-2xl p-4 ${theme.bg} relative z-10 mb-6 border`}>
-                      <div className="mb-2 flex items-baseline justify-between">
-                        <div className="flex items-baseline gap-1">
-                          {isLoading ? (
-                            <span className="text-foreground text-lg font-bold">加载中...</span>
-                          ) : formattedSize ? (
-                            <>
+                    return (
+                      <div className={`rounded-2xl p-4 ${theme.bg} relative z-10 mb-6 border`}>
+                        <div className="mb-2 flex items-baseline justify-between">
+                          <div className="flex items-baseline gap-1">
+                            {isLoading ? (
                               <span className="text-foreground text-lg font-bold">
-                                {formattedSize.size}
+                                {t('common.loading')}
                               </span>
-                              <span className="text-highlight-slate text-sm font-medium">
-                                {formattedSize.unit}
-                              </span>
-                            </>
-                          ) : (
-                            <span className="text-foreground text-lg font-bold">—</span>
-                          )}
+                            ) : formattedSize ? (
+                              <>
+                                <span className="text-foreground text-lg font-bold">
+                                  {formattedSize.size}
+                                </span>
+                                <span className="text-highlight-slate text-sm font-medium">
+                                  {formattedSize.unit}
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-foreground text-lg font-bold">—</span>
+                            )}
+                          </div>
+                          <span className="text-highlight-slate text-xs">
+                            {isUnlimited
+                              ? t('storageManagement.unlimited')
+                              : formattedQuota
+                                ? t('folderNavigation.totalQuota', {
+                                    size: formattedQuota.size,
+                                    unit: formattedQuota.unit,
+                                  })
+                                : t('folderNavigation.sharedSpace')}
+                          </span>
                         </div>
-                        <span className="text-highlight-slate text-xs">
-                          {isUnlimited
-                            ? '无限制'
-                            : formattedQuota
-                              ? `总 ${formattedQuota.size} ${formattedQuota.unit}`
-                              : '共享空间'}
-                        </span>
-                      </div>
 
-                      <div
-                        className={`h-2 w-full ${theme.progressBg} mb-2 overflow-hidden rounded-full`}
-                      >
                         <div
-                          className={`h-full ${theme.progressBar} rounded-full transition-all duration-700 ease-out`}
-                          style={{ width: usageRatio !== null ? `${usageRatio}%` : '0%' }}
-                        />
-                      </div>
+                          className={`h-2 w-full ${theme.progressBg} mb-2 overflow-hidden rounded-full`}
+                        >
+                          <div
+                            className={`h-full ${theme.progressBar} rounded-full transition-all duration-700 ease-out`}
+                            style={{ width: usageRatio !== null ? `${usageRatio}%` : '0%' }}
+                          />
+                        </div>
 
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-highlight-slate">
-                          {usageRatio !== null
-                            ? `${usageRatio.toFixed(1)}% 已使用`
-                            : isUnlimited
-                              ? formattedSize
-                                ? formattedSize.size + ' ' + formattedSize.unit + ' 已使用'
-                                : '—'
-                              : '共享，无独立配额'}
-                        </span>
-                        <span className="text-highlight-slate">{r.size} 个文件</span>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-highlight-slate">
+                            {usageRatio !== null
+                              ? t('folderNavigation.usedPercent', {
+                                  percent: usageRatio.toFixed(1),
+                                })
+                              : isUnlimited
+                                ? formattedSize
+                                  ? t('folderNavigation.usedAmount', {
+                                      size: formattedSize.size,
+                                      unit: formattedSize.unit,
+                                    })
+                                  : '—'
+                                : t('folderNavigation.sharedWithoutQuota')}
+                          </span>
+                          <span className="text-highlight-slate">
+                            {t('folderNavigation.fileCount', { count: r.size })}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  )
-                })()}
+                    )
+                  })()}
                 {/* Action Button */}
                 <button
                   className={cn(

@@ -88,18 +88,6 @@ const executeJobMap: Record<
   'trigger-gpu-analysis-job': async () => {
     return apiAdminExecutePatrolJob('trigger-gpu-analysis-job')
   },
-  'update-user-space-size': async () => {
-    return apiAdminExecutePatrolJob('update-user-space-size')
-  },
-  'analyze-storage-alerts': async () => {
-    return apiAdminExecutePatrolJob('analyze-storage-alerts')
-  },
-  'refresh-public-storage-index-baseline': async () => {
-    return apiAdminExecutePatrolJob('refresh-public-storage-index-baseline')
-  },
-  'refresh-user-storage-index-daily': async () => {
-    return apiAdminExecutePatrolJob('refresh-user-storage-index-daily')
-  },
 }
 
 export default function CronJobCard({

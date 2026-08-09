@@ -16,7 +16,6 @@ import (
 	"github.com/raids-lab/crater/pkg/monitor"
 	"github.com/raids-lab/crater/pkg/patrol"
 	"github.com/raids-lab/crater/pkg/storagegovernance"
-	"github.com/raids-lab/crater/pkg/storageindex"
 )
 
 type CronJobManager struct {
@@ -44,8 +43,6 @@ func NewCronJobManager(
 		promClient,
 		storagegovernance.DefaultConstraintConfig(),
 	)
-	indexService := storageindex.NewService(kubeClient, kubeConfig)
-
 	return &CronJobManager{
 		Client:     cli,
 		KubeClient: kubeClient,
@@ -91,7 +88,6 @@ func NewCronJobManager(
 				})
 			},
 			StorageAgentAwait: awaitStorageDecisionResult,
-			StorageIndex:      indexService,
 		},
 		cron: cron.New(cron.WithLocation(time.Local)),
 	}

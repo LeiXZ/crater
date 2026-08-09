@@ -59,17 +59,22 @@ func (r UserBanRestrictions) Any() bool {
 // User is the basic entity of the system
 type User struct {
 	gorm.Model
-	Name                string                                  `gorm:"uniqueIndex;type:varchar(64);not null;comment:用户名"`
-	Nickname            string                                  `gorm:"type:varchar(64);comment:昵称"`
-	Password            *string                                 `gorm:"type:varchar(256);comment:密码"`
-	Role                Role                                    `gorm:"index:role;not null;comment:用户在平台的角色 (guest, user, admin)"`
-	Status              Status                                  `gorm:"index:status;not null;comment:用户状态 (pending, active, inactive)"`
-	Space               string                                  `gorm:"uniqueIndex;type:varchar(256);not null;comment:用户空间绝对路径"`
-	ImageQuota          int64                                   `gorm:"type:bigint;default:-1;comment:用户在镜像仓库的配额"`
-	ExtraBalance        int64                                   `gorm:"type:bigint;not null;default:0;comment:用户额外点数余额(内部微点, 充值/奖励)"`
-	LastEmailVerifiedAt *time.Time                              `gorm:"comment:最后一次邮箱验证时间"`
-	BannedTimestamp     *time.Time                              `gorm:"index;comment:用户封禁截止时间，晚于当前时间表示封禁中"`
-	BanRestrictions     datatypes.JSONType[UserBanRestrictions] `gorm:"type:jsonb;not null;default:'{}';comment:最近一次封禁配置的限制内容，仅在封禁截止时间有效时生效"`
+	Name                 string                                  `gorm:"uniqueIndex;type:varchar(64);not null;comment:用户名"`
+	Nickname             string                                  `gorm:"type:varchar(64);comment:昵称"`
+	Password             *string                                 `gorm:"type:varchar(256);comment:密码"`
+	Role                 Role                                    `gorm:"index:role;not null;comment:用户在平台的角色 (guest, user, admin)"`
+	Status               Status                                  `gorm:"index:status;not null;comment:用户状态 (pending, active, inactive)"`
+	Space                string                                  `gorm:"uniqueIndex;type:varchar(256);not null;comment:用户空间绝对路径"`
+	ImageQuota           int64                                   `gorm:"type:bigint;default:-1;comment:用户在镜像仓库的配额"`
+	SpaceQuota           int64                                   `gorm:"type:bigint;default:-1;comment:用户存储空间配额"`
+	OriginalSpaceQuota   *int64                                  `gorm:"type:bigint;default:null;comment:临时扩容前的用户存储空间配额"`
+	JobsFrozen           bool                                    `gorm:"type:boolean;default:false;comment:是否因存储配额冻结作业"`
+	ShrinkStage          *string                                 `gorm:"type:varchar(64);default:null;comment:存储配额缩容阶段"`
+	ShrinkStageUpdatedAt *time.Time                              `gorm:"default:null;comment:存储配额缩容阶段更新时间"`
+	ExtraBalance         int64                                   `gorm:"type:bigint;not null;default:0;comment:用户额外点数余额(内部微点, 充值/奖励)"`
+	LastEmailVerifiedAt  *time.Time                              `gorm:"comment:最后一次邮箱验证时间"`
+	BannedTimestamp      *time.Time                              `gorm:"index;comment:用户封禁截止时间，晚于当前时间表示封禁中"`
+	BanRestrictions      datatypes.JSONType[UserBanRestrictions] `gorm:"type:jsonb;not null;default:'{}';comment:最近一次封禁配置的限制内容，仅在封禁截止时间有效时生效"`
 
 	Attributes   datatypes.JSONType[UserAttribute] `gorm:"comment:用户的额外属性 (昵称、邮箱、电话、头像等)"`
 	UserAccounts []UserAccount

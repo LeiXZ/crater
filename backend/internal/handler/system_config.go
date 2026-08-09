@@ -61,11 +61,6 @@ func (mgr *SystemConfigMgr) RegisterAdmin(g *gin.RouterGroup) {
 	// 重置平台通用 LLM 配置
 	g.DELETE("/llm", mgr.ResetLLMConfig)
 
-	// 存储决策模型配置
-	g.GET("/storage-decision", mgr.GetStorageDecisionConfig)
-	g.PUT("/storage-decision", mgr.UpdateStorageDecisionConfig)
-	g.DELETE("/storage-decision", mgr.ResetStorageDecisionConfig)
-
 	g.GET("/gpu-analysis", mgr.GetGpuAnalysisStatus)
 	g.PUT("/gpu-analysis", mgr.SetGpuAnalysisStatus)
 	g.GET("/prequeue", mgr.GetPrequeueConfig)
@@ -321,7 +316,6 @@ func (mgr *SystemConfigMgr) ResetLLMConfig(c *gin.Context) {
 // @Security		Bearer
 // @Success		200		{object}	resputil.Response[StorageDecisionConfigResp] "配置信息"
 // @Failure		500		{object}	resputil.Response[any] "服务器错误"
-// @Router			/v1/admin/system-config/storage-decision [get]
 func (mgr *SystemConfigMgr) GetStorageDecisionConfig(c *gin.Context) {
 	cfg, err := mgr.service.GetStorageDecisionConfig(c.Request.Context())
 	if err != nil {
@@ -354,7 +348,6 @@ func (mgr *SystemConfigMgr) GetStorageDecisionConfig(c *gin.Context) {
 // @Param			data	body		UpdateStorageDecisionConfigReq		true	"配置信息"
 // @Success		200		{object}	resputil.Response[string] "更新成功"
 // @Failure		400		{object}	resputil.Response[any] "参数错误或校验失败"
-// @Router			/v1/admin/system-config/storage-decision [put]
 func (mgr *SystemConfigMgr) UpdateStorageDecisionConfig(c *gin.Context) {
 	var req UpdateStorageDecisionConfigReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -391,7 +384,6 @@ func (mgr *SystemConfigMgr) UpdateStorageDecisionConfig(c *gin.Context) {
 // @Security		Bearer
 // @Success		200		{object}	resputil.Response[string] "重置成功"
 // @Failure		500		{object}	resputil.Response[any] "服务器错误"
-// @Router			/v1/admin/system-config/storage-decision [delete]
 func (mgr *SystemConfigMgr) ResetStorageDecisionConfig(c *gin.Context) {
 	err := mgr.service.ResetStorageDecisionConfig(c.Request.Context())
 	if err != nil {

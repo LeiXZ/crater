@@ -320,15 +320,7 @@ func (mgr *OperationsMgr) ExecutePatrolJob(c *gin.Context) {
 	var f util.AnyFunc
 	var err error
 	switch req.JobName {
-	case patrol.UPDATE_USER_SPACE_SIZE:
-		f, err = patrol.GetPatrolFunc(req.JobName, mgr.cronJobManager.GetPatrolClients(), nil)
-	case patrol.ANALYZE_STORAGE_ALERTS:
-		f, err = patrol.GetPatrolFunc(req.JobName, mgr.cronJobManager.GetPatrolClients(), nil)
 	case patrol.TRIGGER_GPU_ANALYSIS_JOB:
-		f, err = patrol.GetPatrolFunc(req.JobName, mgr.cronJobManager.GetPatrolClients(), nil)
-	case patrol.REFRESH_PUBLIC_STORAGE_INDEX:
-		f, err = patrol.GetPatrolFunc(req.JobName, mgr.cronJobManager.GetPatrolClients(), nil)
-	case patrol.REFRESH_USER_STORAGE_INDEX:
 		f, err = patrol.GetPatrolFunc(req.JobName, mgr.cronJobManager.GetPatrolClients(), nil)
 	default:
 		resputil.Error(c, "Unsupported patrol job: "+req.JobName, resputil.InvalidRequest)
