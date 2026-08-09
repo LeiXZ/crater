@@ -68,7 +68,7 @@ func (mgr *VolcanojobMgr) CreateTensorflowJob(c *gin.Context) {
 	}
 
 	if err := util.CheckStorageQuota(token.Username); err != nil {
-		resputil.Error(c, err.Error(), resputil.NotSpecified)
+		resputil.HandleError(c, err)
 		return
 	}
 

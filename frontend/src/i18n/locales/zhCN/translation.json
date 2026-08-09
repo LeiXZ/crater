@@ -309,6 +309,7 @@
   "cronPolicy.enable": "启用",
   "cronPolicy.executeError": "执行失败：",
   "cronPolicy.executeNow": "立即执行",
+  "cronPolicy.executeSuccess": "任务已成功开始执行",
   "cronPolicy.executing": "执行中...",
   "cronPolicy.gpuAnalysisDesc": "定期检测 GPU 资源异常占用情况，为平台资源治理提供巡检依据。",
   "cronPolicy.gpuAnalysisError": "GPU 违规占用检测更新失败：",

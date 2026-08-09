@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	InternalTokenHeader = "X-Crater-Internal-Token"
+	InternalTokenHeader = "X-Crater-Internal-Token" //nolint:gosec // This is a header name, not a credential.
 	InternalTokenEnv    = "CRATER_STORAGE_INTERNAL_TOKEN"
 	InternalSecretEnv   = "CRATER_STORAGE_INTERNAL_SECRET"
 	ServerURLEnv        = "CRATER_STORAGE_QUOTA_SERVER_URL"
@@ -26,6 +26,7 @@ const (
 	ProviderStorageServer = "storageServer"
 	ProviderToolbox       = "toolbox"
 	ProviderDisabled      = "disabled"
+	maxResponseBodyBytes  = 1 << 20
 )
 
 type Capabilities struct {
@@ -171,7 +172,7 @@ func (c *Client) do(
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return fmt.Errorf("read storage quota response: %w", err)
 	}

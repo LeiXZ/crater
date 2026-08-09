@@ -309,6 +309,7 @@
   "cronPolicy.enable": "Enable",
   "cronPolicy.executeError": "Execution failed: ",
   "cronPolicy.executeNow": "Execute Now",
+  "cronPolicy.executeSuccess": "Job execution started successfully",
   "cronPolicy.executing": "Executing...",
   "cronPolicy.gpuAnalysisDesc": "Periodically inspect abnormal GPU occupancy and provide patrol signals for resource governance.",
   "cronPolicy.gpuAnalysisError": "Failed to update GPU abuse detection policy:",

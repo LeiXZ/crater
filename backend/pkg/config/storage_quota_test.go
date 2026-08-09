@@ -2,6 +2,8 @@ package config
 
 import "testing"
 
+const customRookNamespace = "storage-system"
+
 func TestStorageQuotaProviderValidation(t *testing.T) {
 	t.Parallel()
 
@@ -43,11 +45,11 @@ func TestStorageQuotaClusterDefaultsAndOverrides(t *testing.T) {
 	}
 
 	var custom Config
-	custom.Storage.Quota.RookNamespace = "storage-system"
+	custom.Storage.Quota.RookNamespace = customRookNamespace
 	custom.Storage.Quota.CephFSCSIDriver = "custom.cephfs.csi.example.com"
 	custom.Storage.Quota.ToolboxLabelSelector = "app=ceph-toolbox"
 	custom.Storage.Quota.CephFSName = "shared-fs"
-	if got := custom.StorageQuotaRookNamespace(); got != "storage-system" {
+	if got := custom.StorageQuotaRookNamespace(); got != customRookNamespace {
 		t.Fatalf("custom Rook namespace = %q", got)
 	}
 	if got := custom.StorageQuotaCephFSCSIDriver(); got != "custom.cephfs.csi.example.com" {
@@ -61,8 +63,8 @@ func TestStorageQuotaClusterDefaultsAndOverrides(t *testing.T) {
 	}
 
 	var derived Config
-	derived.Storage.Quota.RookNamespace = "storage-system"
-	if got := derived.StorageQuotaCephFSCSIDriver(); got != "storage-system.cephfs.csi.ceph.com" {
+	derived.Storage.Quota.RookNamespace = customRookNamespace
+	if got := derived.StorageQuotaCephFSCSIDriver(); got != customRookNamespace+".cephfs.csi.ceph.com" {
 		t.Fatalf("derived CephFS CSI driver = %q", got)
 	}
 }

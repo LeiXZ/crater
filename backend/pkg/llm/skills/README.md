@@ -5,9 +5,9 @@ This directory stores domain-specific prompt skills for the Crater backend.
 ## Storage Governance Agent Skill
 
 - Default skill file:
-  [storage-governance-agent/SKILL.md](D:/crater/backend/pkg/llm/skills/storage-governance-agent/SKILL.md)
+  [storage-governance-agent/SKILL.md](storage-governance-agent/SKILL.md)
 - Loaded only by DeepSeek/OpenAI-compatible agent mode:
-  [llm_tools.go](D:/crater/backend/pkg/llm/llm_tools.go)
+  [llm_tools.go](../llm_tools.go)
 
 ## Runtime Controls
 

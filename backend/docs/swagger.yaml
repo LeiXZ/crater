@@ -836,16 +836,6 @@ definitions:
       msg:
         type: string
     type: object
-  github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageDecisionConfigResp:
-    properties:
-      code:
-        description: 依然保持 int (ErrorCode) 类型
-        type: integer
-      data:
-        $ref: '#/definitions/internal_handler.StorageDecisionConfigResp'
-      msg:
-        type: string
-    type: object
   github_com_raids-lab_crater_internal_resputil.Response-internal_handler_TokenReq:
     properties:
       code:
@@ -1966,19 +1956,6 @@ definitions:
       usage_readable:
         type: boolean
     type: object
-  internal_handler.StorageDecisionConfigResp:
-    properties:
-      apiKey:
-        type: string
-      baseUrl:
-        type: string
-      configSource:
-        type: string
-      decisionMode:
-        type: string
-      modelName:
-        type: string
-    type: object
   internal_handler.SwitchQueueReq:
     properties:
       queue:
@@ -2190,21 +2167,6 @@ definitions:
         $ref: '#/definitions/github_com_raids-lab_crater_dao_model.Role'
     required:
     - role
-    type: object
-  internal_handler.UpdateStorageDecisionConfigReq:
-    properties:
-      apiKey:
-        type: string
-      baseUrl:
-        type: string
-      configSource:
-        type: string
-      decisionMode:
-        type: string
-      modelName:
-        type: string
-      validate:
-        type: boolean
     type: object
   internal_handler.UpdateUserBanReq:
     properties:

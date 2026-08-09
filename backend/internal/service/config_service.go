@@ -28,7 +28,7 @@ import (
 
 // 定义掩码常量
 const MaskedAPIKeyPlaceholder = "********************************************"
-const DefaultStorageDirectModelBaseURL = "http://192.168.5.68:30186/v1"
+const DefaultStorageDirectModelBaseURL = ""
 
 const (
 	StorageDecisionConfigSourcePlatform = "platform"
@@ -648,7 +648,7 @@ func (s *ConfigService) UpdateStorageDecisionConfig(
 			return getErr
 		}
 		if err := s.CheckStorageDecisionConnection(ctx, llmCfg, reqCfg); err != nil {
-			return fmt.Errorf("validation failed: %w", err)
+			return bizerr.BadRequest.ParameterError.Wrap(err, "storage decision configuration validation failed")
 		}
 	}
 
@@ -691,7 +691,7 @@ func (s *ConfigService) prepareSecretForSave(
 
 	encrypted, err := crypto.Encrypt(targetValue)
 	if err != nil {
-		return "", fmt.Errorf("failed to encrypt api key: %w", err)
+		return "", bizerr.Internal.ServiceError.Wrap(err, "failed to encrypt API key")
 	}
 	return encrypted, nil
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/raids-lab/crater/dao/model"
 	"github.com/raids-lab/crater/dao/query"
+	"github.com/raids-lab/crater/internal/bizerr"
 )
 
 // CheckStorageQuota 检查用户存储是否超过理论配额，或作业是否被管理员冻结。
@@ -34,7 +35,9 @@ func CheckStorageQuota(username string) error {
 	}
 	if err := db.Raw("SELECT jobs_frozen FROM users WHERE id = ?", baseRow.ID).Scan(&frozenRow).Error; err == nil && frozenRow.JobsFrozen {
 		klog.Infof("CheckStorageQuota: user=%q jobs_frozen=true, blocking job creation", username)
-		return fmt.Errorf("管理员已暂停您的新作业创建权限，请联系管理员")
+		return bizerr.Conflict.ResourceStatusError.New(
+			"new job creation has been paused by an administrator; contact an administrator",
+		)
 	}
 
 	theoreticalQuota := baseRow.SpaceQuota
@@ -67,8 +70,10 @@ func CheckStorageQuota(username string) error {
 		username, usage.Size, theoreticalQuota, float64(usage.Size)/float64(theoreticalQuota)*100)
 
 	if usage.Size >= theoreticalQuota {
-		return fmt.Errorf("存储空间已超过理论配额（已用 %s / 配额 %s），禁止创建新作业",
-			FormatStorageSize(usage.Size), FormatStorageSize(theoreticalQuota))
+		return bizerr.Conflict.ResourceStatusError.New(fmt.Sprintf(
+			"storage usage has reached the quota (%s used / %s quota); new jobs cannot be created",
+			FormatStorageSize(usage.Size), FormatStorageSize(theoreticalQuota),
+		))
 	}
 	return nil
 }

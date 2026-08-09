@@ -14,6 +14,7 @@ import (
 
 	"github.com/raids-lab/crater/dao/model"
 	"github.com/raids-lab/crater/dao/query"
+	"github.com/raids-lab/crater/internal/bizerr"
 	"github.com/raids-lab/crater/internal/resputil"
 	"github.com/raids-lab/crater/pkg/patrol"
 	"github.com/raids-lab/crater/pkg/util"
@@ -312,7 +313,7 @@ func (mgr *OperationsMgr) ExecutePatrolJob(c *gin.Context) {
 		JobName string `json:"jobName" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		resputil.Error(c, err.Error(), resputil.InvalidRequest)
+		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(err, "invalid request body"))
 		return
 	}
 
@@ -323,12 +324,12 @@ func (mgr *OperationsMgr) ExecutePatrolJob(c *gin.Context) {
 	case patrol.TRIGGER_GPU_ANALYSIS_JOB:
 		f, err = patrol.GetPatrolFunc(req.JobName, mgr.cronJobManager.GetPatrolClients(), nil)
 	default:
-		resputil.Error(c, "Unsupported patrol job: "+req.JobName, resputil.InvalidRequest)
+		resputil.HandleError(c, bizerr.BadRequest.ParameterError.New("unsupported patrol job: "+req.JobName))
 		return
 	}
 
 	if err != nil {
-		resputil.Error(c, err.Error(), resputil.ServiceError)
+		resputil.HandleError(c, bizerr.Internal.ServiceError.Wrap(err, "failed to initialize patrol job"))
 		return
 	}
 

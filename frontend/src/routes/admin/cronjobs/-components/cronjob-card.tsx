@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright 2025 RAIDS Lab
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -133,12 +133,7 @@ export default function CronJobCard({
     },
     onSuccess: (data) => {
       if (jobType === 'patrol_function') {
-        const result = data.data
-        if (typeof result === 'string') {
-          toast.success(result)
-        } else {
-          toast.success('任务执行成功')
-        }
+        toast.success(t('cronPolicy.executeSuccess'))
       } else {
         const cleanupData = (data.data ?? {}) as CleanupData
         const deleted = cleanupData.deleted || []

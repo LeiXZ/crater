@@ -141,7 +141,7 @@ func (mgr *AIJobMgr) CreateJupyterJob(c *gin.Context) {
 	taskModel.Owner = token.Username
 
 	if err := interutil.CheckStorageQuota(token.Username); err != nil {
-		resputil.Error(c, err.Error(), resputil.NotSpecified)
+		resputil.HandleError(c, err)
 		return
 	}
 
@@ -213,7 +213,7 @@ func (mgr *AIJobMgr) CreateCustom(c *gin.Context) {
 	taskModel.Owner = token.Username
 
 	if err := interutil.CheckStorageQuota(token.Username); err != nil {
-		resputil.Error(c, err.Error(), resputil.NotSpecified)
+		resputil.HandleError(c, err)
 		return
 	}
 

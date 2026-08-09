@@ -21,6 +21,11 @@ var (
 	BuildTime  string
 )
 
+const (
+	storageModeFull       = "full"
+	storageModeQuotaAgent = "quota-agent"
+)
+
 func initVersionInfo() {
 	if AppVersion == "" {
 		AppVersion = "dev-local"
@@ -52,6 +57,7 @@ func normalizePort(port string) string {
 	return ":" + port
 }
 
+//nolint:gocyclo // Startup validates mode-specific dependencies in one linear flow.
 func main() {
 	initVersionInfo()
 
@@ -66,17 +72,17 @@ func main() {
 
 	mode := strings.ToLower(firstNonEmptyEnv("CRATER_STORAGE_MODE"))
 	if mode == "" {
-		mode = "full"
+		mode = storageModeFull
 	}
-	if mode != "full" && mode != "quota-agent" {
+	if mode != storageModeFull && mode != storageModeQuotaAgent {
 		klog.Fatalf("unsupported storage-server mode %q; expected full or quota-agent", mode)
 	}
 	hasInternalCredential := strings.TrimSpace(os.Getenv(storagequota.InternalTokenEnv)) != "" ||
 		strings.TrimSpace(os.Getenv(storagequota.InternalSecretEnv)) != ""
-	if mode == "full" || !hasInternalCredential {
+	if mode == storageModeFull || !hasInternalCredential {
 		_ = config.GetConfig()
 	}
-	if mode == "full" {
+	if mode == storageModeFull {
 		query.SetDefault(query.GetDB())
 	}
 
@@ -95,7 +101,7 @@ func main() {
 	storage.SetRootDir(rootDir)
 
 	r := gin.Default()
-	if mode == "quota-agent" {
+	if mode == storageModeQuotaAgent {
 		storage.RegisterQuotaRoutes(r)
 	} else {
 		go storage.StartCheckSpace()

@@ -572,7 +572,7 @@ func resolveDatasetStoragePath(datasetURL, relativeURL string) (string, error) {
 	if relativePath == "" {
 		return basePath, nil
 	}
-	if relativePath == ".." || strings.HasPrefix(relativePath, "../") {
+	if relativePath == parentDirectoryPath || strings.HasPrefix(relativePath, parentDirectoryPath+"/") {
 		return "", errors.New("dataset path must stay within the resource directory")
 	}
 	return urlpath.Join(basePath, relativePath), nil

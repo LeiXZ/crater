@@ -660,6 +660,8 @@ func (c *Config) logConfigWarnings() {
 }
 
 // PrintConfig prints the configuration in a formatted and readable way, masking sensitive information
+//
+//nolint:gocyclo // The summary intentionally prints optional configuration sections independently.
 func (c *Config) PrintConfig() {
 	klog.Info("=== Configuration Summary ===")
 

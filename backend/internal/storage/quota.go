@@ -17,6 +17,7 @@ import (
 const (
 	cephDirectoryBytesXattr = "ceph.dir.rbytes"
 	cephQuotaMaxBytesXattr  = "ceph.quota.max_bytes"
+	parentDirectoryPath     = ".."
 )
 
 func RegisterQuotaRoutes(r *gin.Engine) {
@@ -71,6 +72,7 @@ func GetDirectoryUsage(c *gin.Context) {
 	c.JSON(http.StatusOK, storagequota.Usage{Path: relativePath, Bytes: value})
 }
 
+//nolint:gocritic // The tuple distinguishes the resolved filesystem path from the API-relative path.
 func resolveStorageUsagePath(rawPath string) (string, string, error) {
 	if strings.TrimSpace(rawPath) != "." {
 		return resolveStorageDirectory(rawPath)
@@ -133,6 +135,7 @@ func SetDirectoryQuota(c *gin.Context) {
 	c.JSON(http.StatusOK, storagequota.Quota{Path: relativePath, MaxBytes: request.MaxBytes})
 }
 
+//nolint:gocritic // The tuple distinguishes the resolved filesystem path from the API-relative path.
 func resolveStorageDirectory(rawPath string) (string, string, error) {
 	rawPath = strings.TrimSpace(strings.ReplaceAll(rawPath, "\\", "/"))
 	if rawPath == "" || strings.ContainsRune(rawPath, '\x00') {
@@ -143,8 +146,8 @@ func resolveStorageDirectory(rawPath string) (string, string, error) {
 	}
 
 	cleanRelative := filepath.Clean(filepath.FromSlash(rawPath))
-	if cleanRelative == "." || cleanRelative == ".." || filepath.IsAbs(cleanRelative) ||
-		strings.HasPrefix(cleanRelative, ".."+string(filepath.Separator)) {
+	if cleanRelative == "." || cleanRelative == parentDirectoryPath || filepath.IsAbs(cleanRelative) ||
+		strings.HasPrefix(cleanRelative, parentDirectoryPath+string(filepath.Separator)) {
 		return "", "", errInvalidStoragePath
 	}
 

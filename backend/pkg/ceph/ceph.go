@@ -2,6 +2,7 @@ package ceph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -155,6 +156,7 @@ func SetCephDirectoryQuota(
 	return setDirectoryQuota(clientset, config, namespace, relativePath, maxBytes)
 }
 
+//nolint:gocritic // Capacity and usage are returned as distinct values consumed by existing callers.
 func GetCraterStorageCapacity(
 	clientset kubernetes.Interface,
 	config *rest.Config,
@@ -222,7 +224,7 @@ func getDirectoryUsage(
 		return usage, nil
 	}
 	if storageServerErr != nil {
-		return 0, fmt.Errorf("%v; toolbox fallback failed: %w", storageServerErr, toolboxErr)
+		return 0, fmt.Errorf("storage quota providers failed: %w", errors.Join(storageServerErr, toolboxErr))
 	}
 	return 0, fmt.Errorf("read directory usage through toolbox: %w", toolboxErr)
 }
@@ -260,7 +262,7 @@ func setDirectoryQuota(
 	if err := setToolboxQuota(ctx, clientset, config, namespace, relativePath, toolboxQuota); err == nil {
 		return nil
 	} else if storageServerErr != nil {
-		return fmt.Errorf("%v; toolbox fallback failed: %w", storageServerErr, err)
+		return fmt.Errorf("storage quota providers failed: %w", errors.Join(storageServerErr, err))
 	} else {
 		return err
 	}

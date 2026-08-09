@@ -9,6 +9,7 @@ import (
 	"github.com/raids-lab/crater/pkg/storagequota"
 )
 
+//nolint:gocritic // The tuple mirrors the Linux implementation's validated root and target paths.
 func secureStoragePaths(rootPath, targetPath string) (string, string, error) {
 	root, err := filepath.Abs(rootPath)
 	if err != nil {

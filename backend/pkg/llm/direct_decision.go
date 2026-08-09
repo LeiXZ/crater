@@ -25,7 +25,7 @@ const (
 	DirectModelBaseURLEnv     = "CRATER_STORAGE_DIRECT_MODEL_BASE_URL"
 	DirectModelAPIKeyEnv      = "CRATER_STORAGE_DIRECT_MODEL_API_KEY"
 	DirectModelNameEnv        = "CRATER_STORAGE_DIRECT_MODEL_NAME"
-	DefaultDirectModelBaseURL = "http://192.168.5.68:30186/v1"
+	DefaultDirectModelBaseURL = ""
 
 	directDecisionInstruction = `你是面向 AI 集群的存储治理决策模型。请根据输入的结构化存储治理快照，输出一个 JSON 决策对象。
 输出要求：

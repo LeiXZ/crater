@@ -33,7 +33,7 @@ func (mgr *VolcanojobMgr) CreatePytorchJob(c *gin.Context) {
 	}
 
 	if err := util.CheckStorageQuota(token.Username); err != nil {
-		resputil.Error(c, err.Error(), resputil.NotSpecified)
+		resputil.HandleError(c, err)
 		return
 	}
 

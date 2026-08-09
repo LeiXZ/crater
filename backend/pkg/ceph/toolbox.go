@@ -132,6 +132,7 @@ func setToolboxQuota(
 	return nil
 }
 
+//nolint:gocyclo // Resolving the toolbox mount validates each PV and CSI fallback explicitly.
 func resolveToolboxStorageRoot(
 	ctx context.Context,
 	clientset kubernetes.Interface,

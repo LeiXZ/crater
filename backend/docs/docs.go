@@ -11794,21 +11794,6 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageDecisionConfigResp": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "description": "依然保持 int (ErrorCode) 类型",
-                    "type": "integer"
-                },
-                "data": {
-                    "$ref": "#/definitions/internal_handler.StorageDecisionConfigResp"
-                },
-                "msg": {
-                    "type": "string"
-                }
-            }
-        },
         "github_com_raids-lab_crater_internal_resputil.Response-internal_handler_TokenReq": {
             "type": "object",
             "properties": {
@@ -13490,26 +13475,6 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handler.StorageDecisionConfigResp": {
-            "type": "object",
-            "properties": {
-                "apiKey": {
-                    "type": "string"
-                },
-                "baseUrl": {
-                    "type": "string"
-                },
-                "configSource": {
-                    "type": "string"
-                },
-                "decisionMode": {
-                    "type": "string"
-                },
-                "modelName": {
-                    "type": "string"
-                }
-            }
-        },
         "internal_handler.SwitchQueueReq": {
             "type": "object",
             "required": [
@@ -13823,29 +13788,6 @@ const docTemplate = `{
             "properties": {
                 "role": {
                     "$ref": "#/definitions/github_com_raids-lab_crater_dao_model.Role"
-                }
-            }
-        },
-        "internal_handler.UpdateStorageDecisionConfigReq": {
-            "type": "object",
-            "properties": {
-                "apiKey": {
-                    "type": "string"
-                },
-                "baseUrl": {
-                    "type": "string"
-                },
-                "configSource": {
-                    "type": "string"
-                },
-                "decisionMode": {
-                    "type": "string"
-                },
-                "modelName": {
-                    "type": "string"
-                },
-                "validate": {
-                    "type": "boolean"
                 }
             }
         },

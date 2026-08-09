@@ -65,7 +65,13 @@ export interface DirectorySize {
 }
 
 export const apiGetDirectorySize = (path: string) =>
-  apiGet<IResponse<DirectorySize>>(`v1/storage/dirsize/${path.replace(/^\//, '')}`)
+  apiGet<IResponse<DirectorySize>>(
+    `v1/storage/dirsize/${path
+      .replace(/^\//, '')
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')}`
+  )
 
 export interface MyQuota {
   space_quota: number
