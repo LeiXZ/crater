@@ -51,6 +51,7 @@ func inspectXattrCapabilities(rootPath string) storagequota.Capabilities {
 	return capabilities
 }
 
+//nolint:gocritic // The tuple returns the validated root and target paths used by the caller.
 func secureStoragePaths(rootPath, targetPath string) (string, string, error) {
 	root, err := filepath.EvalSymlinks(rootPath)
 	if err != nil {
