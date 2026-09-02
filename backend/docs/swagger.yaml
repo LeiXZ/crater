@@ -1154,6 +1154,8 @@ definitions:
         allOf:
         - $ref: '#/definitions/v1.ResourceList'
         description: Limits
+      startTime:
+        type: string
       status:
         $ref: '#/definitions/v1.PodPhase'
       userID:
