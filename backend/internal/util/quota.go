@@ -9,11 +9,16 @@ import (
 	"github.com/raids-lab/crater/dao/model"
 	"github.com/raids-lab/crater/dao/query"
 	"github.com/raids-lab/crater/internal/bizerr"
+	"github.com/raids-lab/crater/pkg/ceph"
 )
 
 // CheckStorageQuota 检查用户存储是否超过理论配额，或作业是否被管理员冻结。
 // 任一条件成立时返回非 nil 错误，调用方应拒绝创建新作业。
 func CheckStorageQuota(username string) error {
+	if !ceph.StorageQuotaEnabled() {
+		return nil
+	}
+
 	db := query.GetDB()
 
 	// 步骤 1：查用户 ID 和 space_quota
