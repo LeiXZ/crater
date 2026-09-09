@@ -170,7 +170,9 @@ func (c *Client) do(
 	if err != nil {
 		return fmt.Errorf("call storage quota server: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {

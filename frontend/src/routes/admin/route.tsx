@@ -57,8 +57,7 @@ const useAdminSidebarGroups = (): NavGroupProps[] => {
   })
 
   const showGpuAnalysis = gpuStatus?.enabled ?? false
-  const showStorageManagement =
-    !!storageCapabilities?.quota_enabled && !!storageCapabilities?.usage_readable
+  const showStorageManagement = !!storageCapabilities?.quota_enabled
 
   return [
     {

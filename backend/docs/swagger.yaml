@@ -836,6 +836,16 @@ definitions:
       msg:
         type: string
     type: object
+  github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilitySummary:
+    properties:
+      code:
+        description: 依然保持 int (ErrorCode) 类型
+        type: integer
+      data:
+        $ref: '#/definitions/internal_handler.StorageCapabilitySummary'
+      msg:
+        type: string
+    type: object
   github_com_raids-lab_crater_internal_resputil.Response-internal_handler_TokenReq:
     properties:
       code:
@@ -1326,31 +1336,6 @@ definitions:
         type: string
       ldapHelp:
         type: string
-    type: object
-  internal_handler.AutoScaleRequest:
-    properties:
-      max_quota:
-        description: 最大配额，-1 表示无限制
-        minimum: -1
-        type: integer
-      min_quota:
-        description: 最小配额，-1 表示无限制
-        minimum: -1
-        type: integer
-      scale_down_ratio:
-        description: 缩容比例，如 0.8 表示缩容到当前使用的 0.8 倍
-        maximum: 1
-        minimum: 0.1
-        type: number
-      scale_up_ratio:
-        description: 扩容比例，如 1.5 表示扩容到当前使用的 1.5 倍
-        minimum: 1
-        type: number
-    required:
-    - max_quota
-    - min_quota
-    - scale_down_ratio
-    - scale_up_ratio
     type: object
   internal_handler.CLICompatibilityInfo:
     properties:
@@ -1958,6 +1943,15 @@ definitions:
       usage_readable:
         type: boolean
     type: object
+  internal_handler.StorageCapabilitySummary:
+    properties:
+      quota_enabled:
+        type: boolean
+      quota_readable:
+        type: boolean
+      usage_readable:
+        type: boolean
+    type: object
   internal_handler.SwitchQueueReq:
     properties:
       queue:
@@ -2084,6 +2078,7 @@ definitions:
       modelName:
         type: string
       validate:
+        description: 是否立即校验连接
         type: boolean
     required:
     - baseUrl
@@ -5050,31 +5045,28 @@ paths:
       - Resource
   /v1/admin/storage/capabilities:
     get:
-      description: Detect whether the configured storage supports CephFS usage and
-        quota operations
+      description: Probe storage quota providers and return diagnostics to platform
+        administrators
       produces:
       - application/json
       responses:
         "200":
-          description: Success
+          description: OK
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilities'
       security:
       - Bearer: []
-      summary: Get storage quota capabilities
+      summary: Get detailed storage quota capabilities
       tags:
       - Storage
   /v1/admin/storage/user-spaces:
     get:
-      consumes:
-      - application/json
-      description: Get the size of all user spaces from database
       parameters:
       - description: Page number
         in: query
         name: page
         type: integer
-      - description: Page size
+      - description: Page size, from 1 to 100
         in: query
         name: pageSize
         type: integer
@@ -5082,23 +5074,18 @@ paths:
       - application/json
       responses:
         "200":
-          description: Success
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "500":
-          description: Other errors
+          description: OK
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
       security:
       - Bearer: []
-      summary: Get all user space sizes
+      summary: Get paginated user storage usage and quotas
       tags:
       - Storage
   /v1/admin/storage/user-spaces/{user}/quota:
     put:
       consumes:
       - application/json
-      description: Set the space quota for a user
       parameters:
       - description: Username
         in: path
@@ -5115,44 +5102,26 @@ paths:
       - application/json
       responses:
         "200":
-          description: Success
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "400":
-          description: Request parameter error
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "404":
-          description: User not found
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "500":
-          description: Other errors
+          description: OK
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
       security:
       - Bearer: []
-      summary: Set user space quota
+      summary: Set a user's CephFS storage quota
       tags:
       - Storage
   /v1/admin/storage/user-spaces/refresh:
     post:
-      description: Read current CephFS usage for every user directory and update the
-        usage cache
       produces:
       - application/json
       responses:
         "200":
-          description: Success
+          description: OK
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-github_com_raids-lab_crater_pkg_patrol_StorageUsageRefreshResult'
-        "500":
-          description: Other errors
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
       security:
       - Bearer: []
-      summary: Refresh all user space usage
+      summary: Refresh user storage usage and reconcile quota mirrors
       tags:
       - Storage
   /v1/admin/system-config/gpu-analysis:
@@ -5237,7 +5206,7 @@ paths:
     put:
       consumes:
       - application/json
-      description: 更新 LLM 的连接信息。如果 validate 为 true，会尝试连接 /models 接口，失败则不保存。
+      description: 更新 LLM 的连接信息。如果 validate 为 true，会尝试连接 /check 接口，失败则不保存。
       parameters:
       - description: 配置信息
         in: body
@@ -8446,38 +8415,6 @@ paths:
       summary: Update cronjob config
       tags:
       - Operations
-  /v1/operations/cronjob/execute:
-    post:
-      consumes:
-      - application/json
-      description: Execute a patrol job immediately
-      parameters:
-      - description: Job name
-        in: body
-        name: jobName
-        required: true
-        schema:
-          type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: Success
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "400":
-          description: Request parameter error
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "500":
-          description: Other errors
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-      security:
-      - Bearer: []
-      summary: Execute patrol job
-      tags:
-      - Operations
   /v1/operations/keep/{name}:
     put:
       consumes:
@@ -8693,27 +8630,24 @@ paths:
       - statistics
   /v1/storage/capabilities:
     get:
-      description: Detect whether the configured storage supports CephFS usage and
-        quota operations
+      description: Return non-sensitive storage capability flags for the current user
       produces:
       - application/json
       responses:
         "200":
-          description: Success
+          description: OK
           schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilities'
+            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilitySummary'
       security:
       - Bearer: []
-      summary: Get storage quota capabilities
+      summary: Get storage quota capability summary
       tags:
       - Storage
   /v1/storage/dirsize/{path}:
     get:
-      consumes:
-      - application/json
-      description: Get the size of a directory in CephFS using getfattr command
+      description: Read the current user's user, account, or public storage root usage
       parameters:
-      - description: Directory path
+      - description: 'Storage scope: user, account, or public'
         in: path
         name: path
         required: true
@@ -8722,39 +8656,34 @@ paths:
       - application/json
       responses:
         "200":
-          description: Success
+          description: OK
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
         "400":
-          description: Request parameter error
+          description: Bad Request
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "500":
-          description: Other errors
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
       security:
       - Bearer: []
-      summary: Get directory size in CephFS
+      summary: Get permitted storage root usage
       tags:
       - Storage
   /v1/storage/my-quota:
     get:
-      description: Get the storage quota for the currently authenticated user
       produces:
       - application/json
       responses:
         "200":
-          description: Success
-          schema:
-            $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
-        "500":
-          description: Other errors
+          description: OK
           schema:
             $ref: '#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any'
       security:
       - Bearer: []
-      summary: Get current user's storage quota
+      summary: Get the current user's enforced storage quota
       tags:
       - Storage
   /v1/system-config/model-download-limit:

@@ -2,7 +2,7 @@
 
 本文面向维护 Crater 存储功能的开发者、代码评审者和集群管理员，说明当前 PR 中 CephFS 配额管理的需求、架构、数据流、配置、部署、测试、安全边界和回滚方法。
 
-面向平台管理员的部署操作手册见 [CephFS 配额管理](../../website/content/docs/admin/more/db.mdx)。本文是实现与评审的权威说明，不替代面向用户的文档站内容。
+本文同时作为实现评审说明和平台管理员部署手册。
 
 ## 1. PR 概览
 
@@ -29,7 +29,7 @@ Crater 原有的 WebDAV/storage-server Pod 可以挂载 CephFS 并读取文件�
 - 读取和修改用户目录的 `ceph.quota.max_bytes`。
 - 使用 `-1` 表示 Crater 侧的无限制配额，写入 CephFS 时转换为 `0`。
 - 记录成功和失败的配额修改操作。
-- 在创建作业前使用最近一次缓存用量检查用户是否已达到理论配额。
+- 在创建作业前实时读取 CephFS 的实际配额和用量，避免缓存误判。
 - 在没有 Rook toolbox 的集群中，通过 quota-agent 完成真实 CephFS 配额管理。
 
 当前产品界面和已注册 API 不提供以下功能：
@@ -40,7 +40,7 @@ Crater 原有的 WebDAV/storage-server Pod 可以挂载 CephFS 并读取文件�
 - 目录对比。
 - Storage Index 管理界面。
 
-仓库中可能仍存在早期存储治理实验代码或迁移兼容字段，它们不属于本次对外开放的配额管理契约。评审当前功能时，应以本文列出的路由、配置和界面行为为准。
+早期存储治理、自动扩缩容和 LLM 决策代码已从本 PR 移除，应在具有完整产品入口和测试方案后另行提交。
 
 ### 1.3 主要改动模块
 
@@ -50,8 +50,8 @@ Crater 原有的 WebDAV/storage-server Pod 可以挂载 CephFS 并读取文件�
 | CephFS Provider | 在 storage-server 与 toolbox 之间选择实现 | `backend/pkg/ceph/` |
 | 内部客户端 | 调用 quota-agent 内部 API 并完成令牌认证 | `backend/pkg/storagequota/` |
 | quota-agent | 校验路径并直接读写 CephFS xattr | `backend/internal/storage/quota*.go` |
-| 用量缓存与准入 | 保存刷新结果，在创建作业前检查配额 | `backend/pkg/patrol/patrol.go`、`backend/internal/util/quota.go` |
-| 数据模型与迁移 | 用户配额字段、用量缓存表及兼容迁移 | `backend/dao/model/`、`backend/cmd/gorm-gen/models/migrate.go` |
+| 用量缓存与准入 | 保存管理员页面的刷新结果；作业准入实时读取 CephFS | `backend/pkg/patrol/patrol.go`、`backend/internal/util/quota.go` |
+| 数据模型与迁移 | 用户配额镜像字段、用量缓存表及可逆迁移 | `backend/dao/model/`、`backend/cmd/gorm-gen/models/migrate.go` |
 | 前端 | 能力驱动的管理员存储页、文件页用量、配额修改记录 | `frontend/src/routes/admin/storage/`、`frontend/src/components/file/` |
 | Helm | 部署 quota-agent、内部 Service 和认证 Secret | `charts/crater/templates/quota-agent/` |
 | 运维脚本 | 初始化专用 CephX/PV/PVC，本地无镜像测试 | `backend/hack/` |
@@ -82,7 +82,7 @@ CephFS 设置配额不会删除已有文件。如果管理员把配额设置为�
 
 - 现有数据仍保留并可读取。
 - 目录后续写入通常会失败，应用可能收到 `ENOSPC` 或空间不足错误。
-- Crater 使用最近一次缓存用量检查新作业创建；缓存未刷新时，准入判断可能暂时落后于真实用量。
+- Crater 在新作业创建前实时读取 CephFS 配额和用量，因此不会受管理员页面缓存新鲜度影响。
 
 生产环境修改配额前，应先刷新用量，并给业务保留合理余量。
 
@@ -192,7 +192,7 @@ Crater API 使用以下约定：
 
 1. 根据用户记录和 `storage.prefix.user` 计算相对目录。
 2. 通过当前 Provider 读取 `ceph.dir.rbytes`。
-3. 把成功结果写入 `user_space_sizes`。
+3. 同时读取 CephFS 实际配额，把成功的用量写入 `user_space_sizes`，并同步 `users.space_quota` 镜像。
 4. 保留失败用户的旧缓存并累计失败数。
 5. 返回 `updated`、`failed` 和 `refreshed_at`。
 
@@ -203,22 +203,23 @@ Crater API 使用以下约定：
 管理员提交新配额后，backend 按以下顺序处理：
 
 1. 校验用户名和配额值。
-2. 查找用户与当前数据库配额。
-3. 先通过 Provider 写入 CephFS `ceph.quota.max_bytes`。
-4. CephFS 成功后再更新 `users.space_quota`。
-5. 数据库更新失败时，尝试把 CephFS 回滚到旧配额。
-6. 记录 `SetStorageQuota` 成功或失败操作日志。
+2. 在数据库事务中锁定用户行，串行化同一用户的并发修改。
+3. 从 CephFS 读取当前实际配额，作为审计旧值和失败回滚值。
+4. 通过 Provider 写入 CephFS `ceph.quota.max_bytes`，并读回验证实际值。
+5. 验证成功后更新 `users.space_quota` 数据库镜像，并检查受影响行数。
+6. 写入、读回或数据库更新失败时，在用户行锁释放前尝试恢复 CephFS 实际旧配额。
+7. 记录 `SetStorageQuota` 成功或失败操作日志。
 
-先写 CephFS 可以避免数据库展示一个实际未生效的配额。手工修改会清理旧的临时扩容状态字段，因为管理员设置值应成为新的明确基线。
+CephFS xattr 是权威配额，数据库字段只是查询与审计镜像。写后读回可以避免数据库展示一个实际未生效的值，用户行锁可以避免两个管理员请求交错回滚并覆盖后一次修改。
 
 ### 6.3 作业创建检查
 
-创建 Jupyter、WebIDE、PyTorch、TensorFlow、Volcano、AIJob 等作业前，backend 会读取用户配额和 `user_space_sizes` 最近一次缓存：
+创建 Jupyter、WebIDE、PyTorch、TensorFlow、Volcano、AIJob 等作业前，backend 会通过当前 Provider 实时读取用户目录的 CephFS 配额和用量：
 
-- 用户被冻结时拒绝创建新作业。
+- `storage.quota.enabled=false` 时立即跳过，不影响未启用功能的现有集群。
 - 配额为 `-1` 或非正值时跳过容量检查。
-- 缓存用量大于或等于理论配额时拒绝创建新作业。
-- 用户、数据库或缓存记录不可用时采用 fail-open，不阻断现有作业流程。
+- 实际用量大于或等于实际配额时拒绝创建新作业。
+- 功能启用后，如果数据库用户路径或 CephFS Provider 不可用，则采用 fail-closed，避免缓存或探测故障导致错误放行。
 
 该检查是平台侧的提前保护，不替代 CephFS 自身的强制配额。CephFS xattr 才是最终写入限制。
 
@@ -228,10 +229,10 @@ Crater API 使用以下约定：
 
 | 方法 | 路径 | 权限 | 用途 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/storage/capabilities` | 登录用户 | 查询能力 |
-| `GET` | `/api/v1/storage/dirsize/*path` | 登录用户 | 查询可访问目录用量 |
-| `GET` | `/api/v1/storage/my-quota` | 登录用户 | 查询本人数据库配额 |
-| `GET` | `/api/v1/admin/storage/capabilities` | 管理员 | 查询管理员存储能力 |
+| `GET` | `/api/v1/storage/capabilities` | 登录用户 | 查询不含基础设施信息的能力布尔值 |
+| `GET` | `/api/v1/storage/dirsize/{scope}` | 登录用户 | 查询由 JWT 推导的 `user`、`account` 或 `public` 根目录用量 |
+| `GET` | `/api/v1/storage/my-quota` | 登录用户 | 查询本人 CephFS 实际配额 |
+| `GET` | `/api/v1/admin/storage/capabilities` | 管理员 | 查询包含 Provider、PVC/PV、驱动和失败原因的诊断能力 |
 | `GET` | `/api/v1/admin/storage/user-spaces` | 管理员 | 分页读取用户、缓存用量和配额 |
 | `POST` | `/api/v1/admin/storage/user-spaces/refresh` | 管理员 | 手动刷新全部用户用量 |
 | `PUT` | `/api/v1/admin/storage/user-spaces/{user}/quota` | 管理员 | 设置或取消用户配额 |
@@ -267,21 +268,15 @@ Crater API 使用以下约定：
 
 ### 8.1 用户配额字段
 
-`users` 表中的相关字段包括：
+`users` 表新增一个配额镜像字段：
 
 | 字段 | 作用 |
 | --- | --- |
-| `space_quota` | 当前管理员配置的字节配额，`-1` 表示无限制 |
-| `original_space_quota` | 兼容早期临时扩容流程的原始配额 |
-| `jobs_frozen` | 是否禁止该用户创建新作业 |
-| `shrink_stage` | 兼容早期缩容流程的阶段 |
-| `shrink_stage_updated_at` | 兼容早期缩容流程的更新时间 |
-
-当前界面手动修改配额时，会清理临时扩容和缩容状态。
+| `space_quota` | 最近一次成功写入或显式刷新的 CephFS 配额镜像，`-1` 表示无限制；CephFS xattr 仍是权威值 |
 
 ### 8.2 用量缓存表
 
-`user_space_sizes` 保存每个用户最近一次成功读取的目录用量及更新时间。它用于管理员列表展示和作业创建前的快速检查，不是实时计量账本。
+`user_space_sizes` 保存每个用户最近一次成功读取的目录用量及更新时间。它只用于管理员列表展示，不参与作业创建准入，也不是实时计量账本。
 
 数据库迁移必须同时覆盖：
 
@@ -656,7 +651,7 @@ go build ./cmd/storage-server
 
 提交 PR 前，开发者应亲自完成并记录：
 
-- 阅读本文与网站管理员文档，核对术语、命令、链接和版本占位符。
+- 阅读本文，核对术语、命令、链接和版本占位符。
 - 在真实 CephFS 测试目录执行一次用量刷新、设置配额、读回配额和恢复配额。
 - 验证没有 toolbox 时 quota-agent 链路仍然工作。
 - 验证功能关闭或 NFS 场景不展示存储管理入口，文件浏览仍可使用。
@@ -672,7 +667,7 @@ go build ./cmd/storage-server
 - **能力降级**：服务不可用、驱动不匹配、功能关闭时是否隐藏入口且不影响文件功能。
 - **路径安全**：内部 API 是否继续拒绝路径穿越、文件路径和挂载点外符号链接。
 - **兼容性**：无 toolbox、NFS 和旧数据库升级场景是否有明确结果。
-- **缓存语义**：界面和作业准入是否清楚区分实时 CephFS 限制与最近一次用量缓存。
+- **缓存语义**：管理员列表的用量缓存是否与作业准入实时读取的 CephFS 值明确区分。
 
 ## 17. 上线验收标准
 

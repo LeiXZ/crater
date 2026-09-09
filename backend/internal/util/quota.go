@@ -1,89 +1,81 @@
-//nolint:lll,mnd // Quota checks keep SQL and percentage thresholds inline for operational clarity.
 package util
 
 import (
 	"fmt"
 
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/raids-lab/crater/dao/model"
 	"github.com/raids-lab/crater/dao/query"
 	"github.com/raids-lab/crater/internal/bizerr"
 	"github.com/raids-lab/crater/pkg/ceph"
+	"github.com/raids-lab/crater/pkg/config"
 )
 
-// CheckStorageQuota 检查用户存储是否超过理论配额，或作业是否被管理员冻结。
-// 任一条件成立时返回非 nil 错误，调用方应拒绝创建新作业。
-func CheckStorageQuota(username string) error {
+// CheckStorageQuota checks the quota and usage currently enforced by CephFS.
+// Any provider error fails closed while quota management is enabled so stale
+// database cache entries cannot accidentally admit or reject a job.
+func CheckStorageQuota(
+	username string,
+	kubeClient kubernetes.Interface,
+	kubeConfig *rest.Config,
+) error {
 	if !ceph.StorageQuotaEnabled() {
 		return nil
 	}
 
-	db := query.GetDB()
-
-	// 步骤 1：查用户 ID 和 space_quota
-	var baseRow struct {
-		ID         uint  `gorm:"column:id"`
-		SpaceQuota int64 `gorm:"column:space_quota"`
+	var user struct {
+		ID    uint   `gorm:"column:id"`
+		Space string `gorm:"column:space"`
 	}
-	if err := db.Raw(
-		"SELECT id, space_quota FROM users WHERE name = ? AND deleted_at IS NULL",
+	if err := query.GetDB().Raw(
+		"SELECT id, space FROM users WHERE name = ? AND deleted_at IS NULL",
 		username,
-	).Scan(&baseRow).Error; err != nil || baseRow.ID == 0 {
-		klog.Warningf("CheckStorageQuota: user %q not found or query error, skip. err=%v id=%d", username, err, baseRow.ID)
+	).Scan(&user).Error; err != nil {
+		return bizerr.Internal.DatabaseError.Wrap(err, "failed to load user storage path")
+	}
+	if user.ID == 0 || user.Space == "" {
+		return bizerr.Internal.DatabaseError.New("user storage path was not found")
+	}
+
+	cfg := config.GetConfig()
+	prefixes := ceph.StoragePrefixConfig{
+		User: cfg.Storage.Prefix.User, Account: cfg.Storage.Prefix.Account, Public: cfg.Storage.Prefix.Public,
+	}
+	logicalPath := "/user/" + user.Space
+	quota, err := ceph.GetCephDirectoryQuota(
+		kubeClient, kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, prefixes,
+	)
+	if err != nil {
+		return bizerr.Internal.FileSystemError.Wrap(err, "failed to read the enforced storage quota")
+	}
+	if quota <= 0 {
 		return nil
 	}
 
-	// 步骤 2：尝试获取 jobs_frozen
-	var frozenRow struct {
-		JobsFrozen bool `gorm:"column:jobs_frozen"`
+	usage, err := ceph.GetCephDirectorySize(
+		kubeClient, kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, prefixes,
+	)
+	if err != nil {
+		return bizerr.Internal.FileSystemError.Wrap(err, "failed to read current storage usage")
 	}
-	if err := db.Raw("SELECT jobs_frozen FROM users WHERE id = ?", baseRow.ID).Scan(&frozenRow).Error; err == nil && frozenRow.JobsFrozen {
-		klog.Infof("CheckStorageQuota: user=%q jobs_frozen=true, blocking job creation", username)
-		return bizerr.Conflict.ResourceStatusError.New(
-			"new job creation has been paused by an administrator; contact an administrator",
-		)
-	}
-
-	theoreticalQuota := baseRow.SpaceQuota
-
-	// 步骤 3：尝试获取 original_space_quota（临时扩容时才有值）
-	var origRow struct {
-		OriginalSpaceQuota *int64 `gorm:"column:original_space_quota"`
-	}
-	if err := db.Raw("SELECT original_space_quota FROM users WHERE id = ?", baseRow.ID).Scan(&origRow).Error; err == nil && origRow.OriginalSpaceQuota != nil {
-		theoreticalQuota = *origRow.OriginalSpaceQuota
-	}
-
-	klog.Infof("CheckStorageQuota: user=%q id=%d space_quota=%d original_space_quota=%v theoretical=%d",
-		username, baseRow.ID, baseRow.SpaceQuota, origRow.OriginalSpaceQuota, theoreticalQuota)
-
-	// -1 = 无限制，0 = 未设置，均跳过
-	if theoreticalQuota <= 0 {
-		klog.Infof("CheckStorageQuota: user=%q quota=%d (unlimited/unset), skip", username, theoreticalQuota)
-		return nil
-	}
-
-	// 步骤 4：从 user_space_sizes 取最近一次记录的用量
-	var usage model.UserSpaceSize
-	if err := db.Where("user_id = ?", baseRow.ID).First(&usage).Error; err != nil {
-		klog.Warningf("CheckStorageQuota: user=%q no user_space_sizes record (err=%v), skip", username, err)
-		return nil
-	}
-
-	klog.Infof("CheckStorageQuota: user=%q size=%d theoretical=%d (%.1f%%)",
-		username, usage.Size, theoreticalQuota, float64(usage.Size)/float64(theoreticalQuota)*100)
-
-	if usage.Size >= theoreticalQuota {
+	klog.Infof(
+		"CheckStorageQuota: user=%q size=%d quota=%d (%.1f%%)",
+		username, usage, quota, float64(usage)/float64(quota)*percentageMultiplier,
+	)
+	if usage >= quota {
 		return bizerr.Conflict.ResourceStatusError.New(fmt.Sprintf(
 			"storage usage has reached the quota (%s used / %s quota); new jobs cannot be created",
-			FormatStorageSize(usage.Size), FormatStorageSize(theoreticalQuota),
+			FormatStorageSize(usage), FormatStorageSize(quota),
 		))
 	}
 	return nil
 }
 
-// FormatStorageSize 将字节数格式化为人类可读的字符串。
+const percentageMultiplier = 100
+
+// FormatStorageSize formats a byte count for user-facing quota errors.
 func FormatStorageSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {

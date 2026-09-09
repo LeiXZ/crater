@@ -58,7 +58,7 @@ func (mgr *SystemConfigMgr) RegisterAdmin(g *gin.RouterGroup) {
 	// 路由组: /v1/admin/system-config
 	g.GET("/llm", mgr.GetLLMConfig)
 	g.PUT("/llm", mgr.UpdateLLMConfig)
-	// 重置平台通用 LLM 配置
+	// 新增：重置 LLM 配置
 	g.DELETE("/llm", mgr.ResetLLMConfig)
 
 	g.GET("/gpu-analysis", mgr.GetGpuAnalysisStatus)
@@ -89,7 +89,7 @@ type UpdateLLMConfigReq struct {
 	BaseURL   string `json:"baseUrl" binding:"required"`
 	APIKey    string `json:"apiKey"`
 	ModelName string `json:"modelName" binding:"required"`
-	Validate  bool   `json:"validate"`
+	Validate  bool   `json:"validate"` // 是否立即校验连接
 }
 
 type GpuAnalysisStatusResp struct {
@@ -237,7 +237,7 @@ func (mgr *SystemConfigMgr) GetLLMConfig(c *gin.Context) {
 
 // UpdateLLMConfig godoc
 // @Summary		更新 LLM 配置
-// @Description	更新 LLM 的连接信息。如果 validate 为 true，会尝试连接 /models 接口，失败则不保存。
+// @Description	更新 LLM 的连接信息。如果 validate 为 true，会尝试连接 /check 接口，失败则不保存。
 // @Tags			SystemConfig
 // @Accept			json
 // @Produce		json

@@ -106,7 +106,7 @@ export default function FolderNavigation({
 
         if (context?.space) {
           promises.push(
-            apiGetDirectorySize(`user/${context.space}`)
+            apiGetDirectorySize('user')
               .then((r) => {
                 if (r.data) setUserSpaceSize(r.data)
               })
@@ -152,7 +152,7 @@ export default function FolderNavigation({
     }
 
     fetchSpaceSizes()
-  }, [context?.space])
+  }, [context?.accessPublic, context?.accessQueue, context?.queue, context?.space])
 
   // Keep the public, account, and user folders in a predictable order.
   const sortFolders = (folders: FileItem[]) => {

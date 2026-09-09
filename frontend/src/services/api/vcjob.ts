@@ -728,7 +728,3 @@ export type GetCronjobConfigStatusResp = Record<string, GetCronjobConfigStatusRe
 
 export const apiAdminCronJobConfigStatus = (param: GetCronjobConfigStatusReq) =>
   apiV1Post<IResponse<GetCronjobConfigStatusResp>>('admin/operations/cronjob/config/status', param)
-
-// 执行巡检任务
-export const apiAdminExecutePatrolJob = (jobName: string) =>
-  apiV1Post<IResponse<unknown>>('admin/operations/cronjob/execute', { jobName })

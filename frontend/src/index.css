@@ -337,8 +337,6 @@
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
-  --animate-collapsible-down: collapsible-down 0.2s ease-out;
-  --animate-collapsible-up: collapsible-up 0.2s ease-out;
   --animate-caret-blink: caret-blink 1.25s ease-out infinite;
 
   --grid-template-columns-sidebar: 200px auto;
@@ -357,22 +355,6 @@
   @keyframes accordion-up {
     from {
       height: var(--radix-accordion-content-height);
-    }
-    to {
-      height: 0;
-    }
-  }
-  @keyframes collapsible-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--radix-collapsible-content-height);
-    }
-  }
-  @keyframes collapsible-up {
-    from {
-      height: var(--radix-collapsible-content-height);
     }
     to {
       height: 0;
@@ -474,8 +456,6 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
-  --animate-collapsible-down: collapsible-down 0.2s ease-out;
-  --animate-collapsible-up: collapsible-up 0.2s ease-out;
   /*
   ---break---
 */
@@ -493,28 +473,6 @@
   @keyframes accordion-up {
     from {
       height: var(--radix-accordion-content-height);
-    }
-    to {
-      height: 0;
-    }
-  }
-  /*
-  ---break---
-*/
-  @keyframes collapsible-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--radix-collapsible-content-height);
-    }
-  }
-  /*
-  ---break---
-*/
-  @keyframes collapsible-up {
-    from {
-      height: var(--radix-collapsible-content-height);
     }
     to {
       height: 0;

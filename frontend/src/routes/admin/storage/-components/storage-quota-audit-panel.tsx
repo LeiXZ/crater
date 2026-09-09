@@ -18,12 +18,12 @@ import {
 
 import { JsonObject, getOperationLogs } from '@/services/api/admin/operationLog'
 
-function detailNumber(details: JsonObject, key: string): number | null {
+function auditDetailNumber(details: JsonObject, key: string): number | null {
   const value = details[key]
   return typeof value === 'number' ? value : null
 }
 
-function detailString(details: JsonObject, key: string): string {
+function auditDetailString(details: JsonObject, key: string): string {
   const value = details[key]
   return typeof value === 'string' ? value : '-'
 }
@@ -118,17 +118,17 @@ export default function StorageQuotaAuditPanel() {
                     <TableCell>{record.target}</TableCell>
                     <TableCell>
                       {formatBytes(
-                        detailNumber(record.details, 'old_quota'),
+                        auditDetailNumber(record.details, 'old_quota'),
                         t('storageManagement.unlimited')
                       )}
                     </TableCell>
                     <TableCell>
                       {formatBytes(
-                        detailNumber(record.details, 'new_quota'),
+                        auditDetailNumber(record.details, 'new_quota'),
                         t('storageManagement.unlimited')
                       )}
                     </TableCell>
-                    <TableCell>{detailString(record.details, 'provider')}</TableCell>
+                    <TableCell>{auditDetailString(record.details, 'provider')}</TableCell>
                     <TableCell>
                       <Badge variant={record.status === 'Success' ? 'default' : 'destructive'}>
                         {record.status === 'Success'

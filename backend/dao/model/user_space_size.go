@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// UserSpaceSize 用户空间大小模型
+// UserSpaceSize stores the latest explicitly refreshed usage for a user directory.
 type UserSpaceSize struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"index" json:"user_id"`
@@ -13,14 +13,4 @@ type UserSpaceSize struct {
 	Size      int64     `json:"size"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// TenantUsageHistory 租户存储使用历史
-type TenantUsageHistory struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	TenantID   uint      `gorm:"index" json:"tenant_id"`
-	UsageBytes int64     `json:"usage_bytes"`
-	RecordedAt time.Time `json:"recorded_at"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
 }

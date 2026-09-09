@@ -71,7 +71,7 @@ func (mgr *VolcanojobMgr) CreateJupyterJob(c *gin.Context) {
 		return
 	}
 
-	if err := util.CheckStorageQuota(token.Username); err != nil {
+	if err := util.CheckStorageQuota(token.Username, mgr.kubeClient, mgr.config); err != nil {
 		resputil.HandleError(c, err)
 		return
 	}

@@ -142,6 +142,21 @@ func GetCephDirectorySize(
 	return getDirectoryUsage(clientset, config, namespace, relativePath)
 }
 
+// GetCephDirectoryQuota returns the quota enforced by CephFS for a logical path.
+// A value of -1 means that no quota is configured.
+func GetCephDirectoryQuota(
+	clientset kubernetes.Interface,
+	config *rest.Config,
+	namespace, logicalPath string,
+	prefixConfig StoragePrefixConfig,
+) (int64, error) {
+	relativePath, err := logicalPathToStorageRelativePath(logicalPath, prefixConfig)
+	if err != nil {
+		return 0, err
+	}
+	return getDirectoryQuota(clientset, config, namespace, relativePath)
+}
+
 func SetCephDirectoryQuota(
 	clientset kubernetes.Interface,
 	config *rest.Config,
@@ -227,6 +242,47 @@ func getDirectoryUsage(
 		return 0, fmt.Errorf("storage quota providers failed: %w", errors.Join(storageServerErr, toolboxErr))
 	}
 	return 0, fmt.Errorf("read directory usage through toolbox: %w", toolboxErr)
+}
+
+func getDirectoryQuota(
+	clientset kubernetes.Interface,
+	config *rest.Config,
+	namespace, relativePath string,
+) (int64, error) {
+	provider := StorageQuotaProvider()
+	if provider == storagequota.ProviderDisabled {
+		return 0, fmt.Errorf("storage quota provider is disabled")
+	}
+
+	var storageServerErr error
+	if provider == storagequota.ProviderAuto || provider == storagequota.ProviderStorageServer {
+		quota, err := storageQuotaClient().GetQuota(context.Background(), relativePath)
+		if err == nil {
+			return normalizeCephQuota(quota.MaxBytes), nil
+		}
+		storageServerErr = fmt.Errorf("read directory quota from storage-server: %w", err)
+		if provider == storagequota.ProviderStorageServer {
+			return 0, storageServerErr
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), toolboxOperationTimeout)
+	defer cancel()
+	quota, toolboxErr := getToolboxQuota(ctx, clientset, config, namespace, relativePath)
+	if toolboxErr == nil {
+		return quota, nil
+	}
+	if storageServerErr != nil {
+		return 0, fmt.Errorf("storage quota providers failed: %w", errors.Join(storageServerErr, toolboxErr))
+	}
+	return 0, fmt.Errorf("read directory quota through toolbox: %w", toolboxErr)
+}
+
+func normalizeCephQuota(maxBytes int64) int64 {
+	if maxBytes == 0 {
+		return -1
+	}
+	return maxBytes
 }
 
 func setDirectoryQuota(

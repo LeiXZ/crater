@@ -2,16 +2,19 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog/v2"
 
 	"github.com/raids-lab/crater/dao/model"
 	"github.com/raids-lab/crater/dao/query"
@@ -21,15 +24,16 @@ import (
 	"github.com/raids-lab/crater/pkg/ceph"
 	"github.com/raids-lab/crater/pkg/config"
 	"github.com/raids-lab/crater/pkg/constants"
-	"github.com/raids-lab/crater/pkg/monitor"
 	"github.com/raids-lab/crater/pkg/patrol"
-	"github.com/raids-lab/crater/pkg/storagegovernance"
 	"github.com/raids-lab/crater/pkg/storagequota"
 )
 
-const toolboxCapabilityTimeout = 20 * time.Second
-
-// ---- LLM 任务状态存储 ----
+const (
+	toolboxCapabilityTimeout = 20 * time.Second
+	capabilityCacheTTL       = time.Minute
+	cephStorageBackend       = "cephfs"
+	unknownStorageBackend    = "unknown"
+)
 
 //nolint:gochecknoinits // This is the standard way to register a gin handler.
 func init() {
@@ -40,7 +44,10 @@ type StorageMgr struct {
 	name       string
 	kubeClient kubernetes.Interface
 	kubeConfig *rest.Config
-	promClient monitor.PrometheusInterface
+
+	capabilityMu        sync.Mutex
+	cachedCapabilities  StorageCapabilities
+	capabilityExpiresAt time.Time
 }
 
 type StorageCapabilities struct {
@@ -60,30 +67,18 @@ type StorageCapabilities struct {
 	Reasons                []string `json:"reasons,omitempty"`
 }
 
+type StorageCapabilitySummary struct {
+	QuotaEnabled  bool `json:"quota_enabled"`
+	UsageReadable bool `json:"usage_readable"`
+	QuotaReadable bool `json:"quota_readable"`
+}
+
 type SetUserSpaceQuotaRequest struct {
 	Quota int64 `json:"quota" binding:"required"`
 }
 
-const (
-	cephStorageBackend    = "cephfs"
-	unknownStorageBackend = "unknown"
-)
-
-// AutoScaleRequest 自动扩缩容请求
-type AutoScaleRequest struct {
-	MinQuota       int64   `json:"min_quota" binding:"required,min=-1"`               // 最小配额，-1 表示无限制
-	MaxQuota       int64   `json:"max_quota" binding:"required,min=-1"`               // 最大配额，-1 表示无限制
-	ScaleUpRatio   float64 `json:"scale_up_ratio" binding:"required,min=1"`           // 扩容比例，如 1.5 表示扩容到当前使用的 1.5 倍
-	ScaleDownRatio float64 `json:"scale_down_ratio" binding:"required,min=0.1,max=1"` // 缩容比例，如 0.8 表示缩容到当前使用的 0.8 倍
-}
-
 func NewStorageMgr(conf *RegisterConfig) Manager {
-	return &StorageMgr{
-		name:       "storage",
-		kubeClient: conf.KubeClient,
-		kubeConfig: conf.KubeConfig,
-		promClient: conf.PrometheusClient,
-	}
+	return &StorageMgr{name: "storage", kubeClient: conf.KubeClient, kubeConfig: conf.KubeConfig}
 }
 
 func (mgr *StorageMgr) GetName() string { return mgr.name }
@@ -91,7 +86,7 @@ func (mgr *StorageMgr) GetName() string { return mgr.name }
 func (mgr *StorageMgr) RegisterPublic(_ *gin.RouterGroup) {}
 
 func (mgr *StorageMgr) RegisterProtected(g *gin.RouterGroup) {
-	g.GET("/capabilities", mgr.GetCapabilities)
+	g.GET("/capabilities", mgr.GetCapabilitySummary)
 	g.GET("/dirsize/*path", mgr.GetDirectorySize)
 	g.GET("/my-quota", mgr.GetMyQuota)
 }
@@ -103,21 +98,47 @@ func (mgr *StorageMgr) RegisterAdmin(g *gin.RouterGroup) {
 	g.PUT("/user-spaces/:user/quota", mgr.SetUserSpaceQuota)
 }
 
-// GetCapabilities godoc
-//
-// @Summary Get storage quota capabilities
-// @Description Detect whether the configured storage supports CephFS usage and quota operations
+// GetCapabilitySummary godoc
+// @Summary Get storage quota capability summary
+// @Description Return non-sensitive storage capability flags for the current user
 // @Tags Storage
 // @Produce json
 // @Security Bearer
-// @Success 200 {object} resputil.Response[StorageCapabilities] "Success"
+// @Success 200 {object} resputil.Response[StorageCapabilitySummary]
 // @Router /v1/storage/capabilities [get]
-// @Router /v1/admin/storage/capabilities [get]
-func (mgr *StorageMgr) GetCapabilities(c *gin.Context) {
-	resputil.Success(c, mgr.detectCapabilities())
+func (mgr *StorageMgr) GetCapabilitySummary(c *gin.Context) {
+	capabilities := mgr.getCachedCapabilities(c.Query("refresh") == "true")
+	resputil.Success(c, StorageCapabilitySummary{
+		QuotaEnabled:  capabilities.QuotaEnabled,
+		UsageReadable: capabilities.UsageReadable,
+		QuotaReadable: capabilities.QuotaReadable,
+	})
 }
 
-//nolint:gocyclo // Capability probing reports each independent degradation reason.
+// GetCapabilities godoc
+// @Summary Get detailed storage quota capabilities
+// @Description Probe storage quota providers and return diagnostics to platform administrators
+// @Tags Storage
+// @Produce json
+// @Security Bearer
+// @Success 200 {object} resputil.Response[StorageCapabilities]
+// @Router /v1/admin/storage/capabilities [get]
+func (mgr *StorageMgr) GetCapabilities(c *gin.Context) {
+	resputil.Success(c, mgr.getCachedCapabilities(c.Query("refresh") == "true"))
+}
+
+func (mgr *StorageMgr) getCachedCapabilities(force bool) StorageCapabilities {
+	mgr.capabilityMu.Lock()
+	defer mgr.capabilityMu.Unlock()
+	if !force && time.Now().Before(mgr.capabilityExpiresAt) {
+		return mgr.cachedCapabilities
+	}
+	mgr.cachedCapabilities = mgr.detectCapabilities()
+	mgr.capabilityExpiresAt = time.Now().Add(capabilityCacheTTL)
+	return mgr.cachedCapabilities
+}
+
+//nolint:gocyclo // Each capability is independently probed and reported.
 func (mgr *StorageMgr) detectCapabilities() StorageCapabilities {
 	cfg := config.GetConfig()
 	capability := StorageCapabilities{
@@ -145,24 +166,18 @@ func (mgr *StorageMgr) detectCapabilities() StorageCapabilities {
 		capability.Reasons = append(capability.Reasons, err.Error())
 		return capability
 	}
-	capability.PVName = pvName
-	capability.PVCNamespace = pvcNamespace
-	capability.CSIDriver = driver
-
-	expectedDriver := ceph.StorageQuotaCephFSCSIDriver()
-	if driver != expectedDriver {
+	capability.PVName, capability.PVCNamespace, capability.CSIDriver = pvName, pvcNamespace, driver
+	if driver != ceph.StorageQuotaCephFSCSIDriver() {
 		if driver != "" {
 			capability.Backend = driver
 		}
 		capability.Reasons = append(capability.Reasons, fmt.Sprintf(
 			"storage PVC CSI driver %q does not match configured CephFS driver %q",
-			driver,
-			expectedDriver,
+			driver, ceph.StorageQuotaCephFSCSIDriver(),
 		))
 		return capability
 	}
 	capability.Backend = cephStorageBackend
-
 	if capability.QuotaProvider == storagequota.ProviderDisabled {
 		capability.Reasons = append(capability.Reasons, "storage quota provider is disabled")
 		return capability
@@ -174,10 +189,7 @@ func (mgr *StorageMgr) detectCapabilities() StorageCapabilities {
 		cancel()
 		capability.StorageServerAvailable = storageServerErr == nil
 		if storageServerErr != nil {
-			capability.Reasons = append(
-				capability.Reasons,
-				fmt.Sprintf("storage-server is not available: %v", storageServerErr),
-			)
+			capability.Reasons = append(capability.Reasons, fmt.Sprintf("storage-server is not available: %v", storageServerErr))
 		} else {
 			capability.UsageReadable = storageServerCapabilities.UsageReadable
 			capability.QuotaReadable = storageServerCapabilities.QuotaReadable
@@ -192,18 +204,12 @@ func (mgr *StorageMgr) detectCapabilities() StorageCapabilities {
 	if needsToolbox {
 		ctx, cancel := context.WithTimeout(context.Background(), toolboxCapabilityTimeout)
 		toolboxCapabilities, toolboxErr := ceph.GetToolboxQuotaCapabilities(
-			ctx,
-			mgr.kubeClient,
-			mgr.kubeConfig,
-			ceph.StorageQuotaRookNamespace(),
+			ctx, mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(),
 		)
 		cancel()
 		capability.ToolboxAvailable = toolboxErr == nil && toolboxCapabilities.UsageReadable
 		if toolboxErr != nil {
-			capability.Reasons = append(
-				capability.Reasons,
-				fmt.Sprintf("toolbox is not available: %v", toolboxErr),
-			)
+			capability.Reasons = append(capability.Reasons, fmt.Sprintf("toolbox is not available: %v", toolboxErr))
 		} else {
 			capability.UsageReadable = capability.UsageReadable || toolboxCapabilities.UsageReadable
 			capability.QuotaReadable = capability.QuotaReadable || toolboxCapabilities.QuotaReadable
@@ -214,34 +220,25 @@ func (mgr *StorageMgr) detectCapabilities() StorageCapabilities {
 	return capability
 }
 
-//nolint:gocritic // The tuple returns PV name, PVC namespace, and CSI driver as separate API fields.
+//nolint:gocritic // The tuple is serialized as three independent diagnostic fields.
 func (mgr *StorageMgr) detectStoragePV(pvcName string) (string, string, string, error) {
-	cfg := config.GetConfig()
-	pvcNamespace := strings.TrimSpace(cfg.Namespaces.Job)
+	pvcNamespace := strings.TrimSpace(config.GetConfig().Namespaces.Job)
 	if pvcNamespace == "" {
 		return "", "", "", bizerr.Internal.K8sServiceError.New("job namespace is not configured")
 	}
 	pvc, err := mgr.kubeClient.CoreV1().PersistentVolumeClaims(pvcNamespace).
 		Get(context.TODO(), pvcName, metav1.GetOptions{})
 	if err != nil {
-		return "", pvcNamespace, "", bizerr.Internal.K8sServiceError.Wrap(
-			err,
-			fmt.Sprintf("failed to get storage PVC %s/%s", pvcNamespace, pvcName),
-		)
+		return "", pvcNamespace, "", bizerr.Internal.K8sServiceError.Wrap(err, "failed to get storage PVC")
 	}
-
 	if pvc.Spec.VolumeName == "" {
-		return "", pvc.Namespace, "", bizerr.Internal.K8sServiceError.New(
-			fmt.Sprintf("storage PVC %s is not bound to a PV", pvcName),
-		)
+		return "", pvc.Namespace, "", bizerr.Internal.K8sServiceError.New("storage PVC is not bound to a PV")
 	}
-
-	pv, err := mgr.kubeClient.CoreV1().PersistentVolumes().Get(context.TODO(), pvc.Spec.VolumeName, metav1.GetOptions{})
+	pv, err := mgr.kubeClient.CoreV1().PersistentVolumes().Get(
+		context.TODO(), pvc.Spec.VolumeName, metav1.GetOptions{},
+	)
 	if err != nil {
-		return pvc.Spec.VolumeName, pvc.Namespace, "", bizerr.Internal.K8sServiceError.Wrap(
-			err,
-			fmt.Sprintf("failed to get storage PV %s", pvc.Spec.VolumeName),
-		)
+		return pvc.Spec.VolumeName, pvc.Namespace, "", bizerr.Internal.K8sServiceError.Wrap(err, "failed to get storage PV")
 	}
 	if pv.Spec.CSI == nil {
 		return pv.Name, pvc.Namespace, "", nil
@@ -249,246 +246,212 @@ func (mgr *StorageMgr) detectStoragePV(pvcName string) (string, string, string, 
 	return pv.Name, pvc.Namespace, pv.Spec.CSI.Driver, nil
 }
 
+func storagePrefixes() ceph.StoragePrefixConfig {
+	cfg := config.GetConfig()
+	return ceph.StoragePrefixConfig{
+		User: cfg.Storage.Prefix.User, Account: cfg.Storage.Prefix.Account, Public: cfg.Storage.Prefix.Public,
+	}
+}
+
+func (mgr *StorageMgr) authorizedLogicalPath(c *gin.Context) (string, error) {
+	scope := strings.Trim(c.Param("path"), "/")
+	if scope == "" || strings.Contains(scope, "/") {
+		return "", bizerr.BadRequest.ParameterError.New("path must be one of user, account, or public")
+	}
+	token := util.GetToken(c)
+	switch scope {
+	case "user":
+		var user model.User
+		if err := query.GetDB().Select("id", "space").First(&user, token.UserID).Error; err != nil {
+			return "", bizerr.NotFound.DataBaseNotFound.Wrap(err, "user was not found")
+		}
+		return "/user/" + user.Space, nil
+	case "account":
+		if token.AccountID == 0 || token.AccountID == model.DefaultAccountID || token.AccountAccessMode == model.AccessModeNA {
+			return "", bizerr.Forbidden.PermissionDenied.New("account storage access is not allowed")
+		}
+		var account model.Account
+		if err := query.GetDB().Select("id", "space").First(&account, token.AccountID).Error; err != nil {
+			return "", bizerr.NotFound.DataBaseNotFound.Wrap(err, "account was not found")
+		}
+		return "/account/" + account.Space, nil
+	case "public":
+		if token.PublicAccessMode == model.AccessModeNA {
+			return "", bizerr.Forbidden.PermissionDenied.New("public storage access is not allowed")
+		}
+		return "/public", nil
+	default:
+		return "", bizerr.BadRequest.ParameterError.New("path must be one of user, account, or public")
+	}
+}
+
 // GetDirectorySize godoc
-//
-// @Summary Get directory size in CephFS
-// @Description Get the size of a directory in CephFS using getfattr command
+// @Summary Get permitted storage root usage
+// @Description Read the current user's user, account, or public storage root usage
 // @Tags Storage
-// @Accept json
 // @Produce json
 // @Security Bearer
-// @Param path path string true "Directory path"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 400 {object} resputil.Response[any] "Request parameter error"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
+// @Param path path string true "Storage scope: user, account, or public"
+// @Success 200 {object} resputil.Response[any]
+// @Failure 400 {object} resputil.Response[any]
+// @Failure 403 {object} resputil.Response[any]
 // @Router /v1/storage/dirsize/{path} [get]
 func (mgr *StorageMgr) GetDirectorySize(c *gin.Context) {
-	// 1. 获取路径参数
-	path := strings.TrimPrefix(c.Request.URL.Path, "/api/v1/storage/dirsize/")
-	if path == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("path is required"))
+	logicalPath, err := mgr.authorizedLogicalPath(c)
+	if err != nil {
+		resputil.HandleError(c, err)
 		return
 	}
-
-	// 2. 确保路径以 / 开头
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-
-	// 3. 执行 Ceph 命令获取目录大小
-	cfg := config.GetConfig()
-	prefixConfig := ceph.StoragePrefixConfig{
-		User:    cfg.Storage.Prefix.User,
-		Account: cfg.Storage.Prefix.Account,
-		Public:  cfg.Storage.Prefix.Public,
-	}
 	size, err := ceph.GetCephDirectorySize(
-		mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), path, prefixConfig,
+		mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, storagePrefixes(),
 	)
 	if err != nil {
-		klog.Warningf("GetDirectorySize: failed to get size for %q, returning unknown sentinel: %v", path, err)
-		size = -1
+		resputil.HandleError(c, bizerr.Internal.FileSystemError.Wrap(err, "failed to read storage usage"))
+		return
 	}
-
-	// 4. 返回结果
-	resputil.Success(c, gin.H{
-		"path":      path,
-		"size":      size,
-		"unit":      "bytes",
-		"formatted": formatSize(size),
-	})
+	resputil.Success(c, gin.H{"size": size, "unit": "bytes", "formatted": formatSize(size)})
 }
 
 // GetMyQuota godoc
-//
-// @Summary Get current user's storage quota
-// @Description Get the storage quota for the currently authenticated user
+// @Summary Get the current user's enforced storage quota
 // @Tags Storage
 // @Produce json
 // @Security Bearer
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
+// @Success 200 {object} resputil.Response[any]
 // @Router /v1/storage/my-quota [get]
 func (mgr *StorageMgr) GetMyQuota(c *gin.Context) {
-	token := util.GetToken(c)
-
-	var row struct {
-		SpaceQuota int64 `gorm:"column:space_quota"`
-	}
-	if err := query.GetDB().Raw(
-		"SELECT space_quota FROM users WHERE id = ? AND deleted_at IS NULL", token.UserID,
-	).Scan(&row).Error; err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to get storage quota"))
+	logicalPath, err := mgr.authorizedUserPath(c)
+	if err != nil {
+		resputil.HandleError(c, err)
 		return
 	}
+	quota, err := ceph.GetCephDirectoryQuota(
+		mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, storagePrefixes(),
+	)
+	if err != nil {
+		resputil.HandleError(c, bizerr.Internal.FileSystemError.Wrap(err, "failed to read the enforced storage quota"))
+		return
+	}
+	resputil.Success(c, gin.H{"space_quota": quota, "space_quota_formatted": formatSize(quota)})
+}
 
-	resputil.Success(c, gin.H{
-		"space_quota":           row.SpaceQuota,
-		"space_quota_formatted": formatSize(row.SpaceQuota),
-	})
+func (mgr *StorageMgr) authorizedUserPath(c *gin.Context) (string, error) {
+	token := util.GetToken(c)
+	var user model.User
+	if err := query.GetDB().Select("id", "space").First(&user, token.UserID).Error; err != nil {
+		return "", bizerr.NotFound.DataBaseNotFound.Wrap(err, "user was not found")
+	}
+	return "/user/" + user.Space, nil
 }
 
 // GetAllUserSpaceSizes godoc
-//
-// @Summary Get all user space sizes
-// @Description Get the size of all user spaces from database
+// @Summary Get paginated user storage usage and quotas
 // @Tags Storage
-// @Accept json
 // @Produce json
 // @Security Bearer
 // @Param page query int false "Page number"
-// @Param pageSize query int false "Page size"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
+// @Param pageSize query int false "Page size, from 1 to 100"
+// @Success 200 {object} resputil.Response[any]
 // @Router /v1/admin/storage/user-spaces [get]
 func (mgr *StorageMgr) GetAllUserSpaceSizes(c *gin.Context) {
-	// 1. 获取分页参数
 	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, pageSizeErr := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
-	if pageErr != nil || page < 1 || pageSizeErr != nil || pageSize < 1 || pageSize > 1000 {
+	pageSize, pageSizeErr := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if pageErr != nil || page < 1 || pageSizeErr != nil || pageSize < 1 || pageSize > 100 {
 		resputil.HandleError(c, bizerr.BadRequest.ParameterError.New(
-			"page must be positive and pageSize must be between 1 and 1000",
+			"page must be positive and pageSize must be between 1 and 100",
 		))
 		return
 	}
 
-	// 2. 从数据库中获取用户空间大小和配额
-	type UserSpaceInfo struct {
-		Username           string     `json:"username"`
-		Size               int64      `json:"size"`
-		UpdatedAt          *time.Time `json:"updated_at"`
-		SpaceQuota         int64      `json:"space_quota"`
-		OriginalSpaceQuota *int64     `json:"original_space_quota"`
-		JobsFrozen         bool       `json:"jobs_frozen"`
-		ShrinkStage        string     `json:"shrink_stage"`
+	type userSpaceInfo struct {
+		ID         uint       `gorm:"column:id"`
+		Username   string     `gorm:"column:username"`
+		Space      string     `gorm:"column:space"`
+		Size       int64      `gorm:"column:size"`
+		UpdatedAt  *time.Time `gorm:"column:updated_at"`
+		SpaceQuota int64      `gorm:"column:space_quota"`
 	}
-
-	var userSpaceInfos []UserSpaceInfo
+	db := query.GetDB().WithContext(c.Request.Context())
 	var total int64
-
-	db := query.GetDB()
-
-	// 计算总数
-	if err := db.Model(&model.User{}).Where("deleted_at IS NULL").Count(&total).Error; err != nil {
-		klog.Errorf("GetAllUserSpaceSizes: count users: %v", err)
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to count users for storage usage"))
+	if err := db.Model(&model.User{}).Count(&total).Error; err != nil {
+		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to count users"))
 		return
 	}
-
-	// 计算分页偏移量
-	offset := (page - 1) * pageSize
-
-	// 获取分页数据，关联 User 表获取 SpaceQuota 和 OriginalSpaceQuota
-	if err := db.Table("users").
-		Select(
-			"users.name as username, " +
-				"COALESCE(user_space_sizes.size, -1) as size, " +
-				"user_space_sizes.updated_at as updated_at, " +
-				"users.space_quota as space_quota, " +
-				"users.original_space_quota as original_space_quota, " +
-				"users.jobs_frozen as jobs_frozen, " +
-				"users.shrink_stage as shrink_stage",
-		).
-		Joins("LEFT JOIN user_space_sizes ON user_space_sizes.user_id = users.id").
-		Where("users.deleted_at IS NULL").
-		Order("users.id ASC").
-		Offset(offset).Limit(pageSize).
-		Find(&userSpaceInfos).Error; err != nil {
-		klog.Errorf("GetAllUserSpaceSizes: query user storage usage: %v", err)
+	var rows []userSpaceInfo
+	if err := db.Table("users").Select(
+		"users.id, users.name AS username, users.space, users.space_quota, " +
+			"COALESCE(user_space_sizes.size, -1) AS size, user_space_sizes.updated_at",
+	).Joins("LEFT JOIN user_space_sizes ON user_space_sizes.user_id = users.id").
+		Where("users.deleted_at IS NULL").Order("users.id ASC").
+		Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error; err != nil {
 		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to query user storage usage"))
 		return
 	}
 
-	// 3. 格式化结果
-	formattedUserSpaces := make([]map[string]any, 0, len(userSpaceInfos))
-	for i := range userSpaceInfos {
-		info := userSpaceInfos[i]
-		item := map[string]any{
-			"user":            info.Username,
-			"size":            info.Size,
-			"quota":           info.SpaceQuota,
-			"unit":            "bytes",
-			"formatted":       formatSize(info.Size),
-			"updated_at":      info.UpdatedAt,
-			"quota_formatted": formatSize(info.SpaceQuota),
-			"is_expanded":     info.OriginalSpaceQuota != nil,
-			"jobs_frozen":     info.JobsFrozen,
-			"shrink_stage":    info.ShrinkStage,
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		quota, err := ceph.GetCephDirectoryQuota(
+			mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(),
+			"/user/"+row.Space, storagePrefixes(),
+		)
+		if err != nil {
+			resputil.HandleError(c, bizerr.Internal.FileSystemError.Wrap(
+				err, fmt.Sprintf("failed to read the enforced quota for user %s", row.Username),
+			))
+			return
 		}
-		if info.OriginalSpaceQuota != nil {
-			item["original_quota"] = *info.OriginalSpaceQuota
-			item["original_quota_formatted"] = formatSize(*info.OriginalSpaceQuota)
-		}
-		formattedUserSpaces = append(formattedUserSpaces, item)
+		items = append(items, map[string]any{
+			"user": row.Username, "size": row.Size, "quota": quota,
+			"database_quota": row.SpaceQuota, "quota_synchronized": quota == row.SpaceQuota,
+			"unit": "bytes", "formatted": formatSize(row.Size),
+			"quota_formatted": formatSize(quota), "updated_at": row.UpdatedAt,
+		})
 	}
-
-	// 4. 返回结果（包含分页信息）
 	resputil.Success(c, gin.H{
-		"items":      formattedUserSpaces,
-		"total":      total,
-		"page":       page,
-		"pageSize":   pageSize,
+		"items": items, "total": total, "page": page, "pageSize": pageSize,
 		"totalPages": (int(total) + pageSize - 1) / pageSize,
 	})
 }
 
 // RefreshUserSpaceSizes godoc
-//
-// @Summary Refresh all user space usage
-// @Description Read current CephFS usage for every user directory and update the usage cache
+// @Summary Refresh user storage usage and reconcile quota mirrors
 // @Tags Storage
 // @Produce json
 // @Security Bearer
-// @Success 200 {object} resputil.Response[patrol.StorageUsageRefreshResult] "Success"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
+// @Success 200 {object} resputil.Response[patrol.StorageUsageRefreshResult]
 // @Router /v1/admin/storage/user-spaces/refresh [post]
 func (mgr *StorageMgr) RefreshUserSpaceSizes(c *gin.Context) {
 	result, err := patrol.RefreshUserSpaceSizes(c.Request.Context(), &patrol.Clients{
-		KubeClient: mgr.kubeClient,
-		KubeConfig: mgr.kubeConfig,
+		KubeClient: mgr.kubeClient, KubeConfig: mgr.kubeConfig,
 	})
 	if err != nil {
 		resputil.HandleError(c, bizerr.Internal.FileSystemError.Wrap(err, "failed to refresh storage usage"))
 		return
 	}
-
 	resputil.Success(c, result)
 }
 
 // SetUserSpaceQuota godoc
-//
-// @Summary Set user space quota
-// @Description Set the space quota for a user
+// @Summary Set a user's CephFS storage quota
 // @Tags Storage
 // @Accept json
 // @Produce json
 // @Security Bearer
 // @Param user path string true "Username"
 // @Param quota body SetUserSpaceQuotaRequest true "Space quota request"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 400 {object} resputil.Response[any] "Request parameter error"
-// @Failure 404 {object} resputil.Response[any] "User not found"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
+// @Success 200 {object} resputil.Response[any]
 // @Router /v1/admin/storage/user-spaces/{user}/quota [put]
 func (mgr *StorageMgr) SetUserSpaceQuota(c *gin.Context) {
-	// 1. 获取用户名参数
-	user := c.Param("user")
-	if user == "" {
+	username := c.Param("user")
+	if username == "" {
 		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
 		return
 	}
-
-	// 2. 解析请求体
 	var req SetUserSpaceQuotaRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(
-			err,
-			"quota must be provided as an integer number of bytes",
-		))
+		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(err, "quota must be an integer number of bytes"))
 		return
 	}
-
-	// 3. 验证配额值
 	if req.Quota < -1 || req.Quota == 0 {
 		resputil.HandleError(c, bizerr.BadRequest.ParameterError.New(
 			"quota must be -1 for unlimited or greater than zero",
@@ -496,609 +459,87 @@ func (mgr *StorageMgr) SetUserSpaceQuota(c *gin.Context) {
 		return
 	}
 
-	// 4. 获取用户信息（含临时扩容状态）
-	db := query.GetDB()
-	var userRow struct {
-		model.User
-		SpaceQuota         int64  `gorm:"column:space_quota"`
-		OriginalSpaceQuota *int64 `gorm:"column:original_space_quota"`
-	}
-	if err := db.Model(&model.User{}).
-		Select("users.*, users.space_quota, users.original_space_quota").
-		Where("name = ?", user).
-		First(&userRow).Error; err != nil {
-		resputil.HandleError(c, bizerr.NotFound.DataBaseNotFound.Wrap(err, "user was not found"))
-		return
-	}
-	userInfo := userRow.User
-	auditDetails := map[string]any{
-		"old_quota": userRow.SpaceQuota,
-		"new_quota": req.Quota,
-		"provider":  ceph.StorageQuotaProvider(),
-	}
-
-	// A manual change overrides any legacy temporary expansion. Apply CephFS
-	// first so the database never reports a quota that was not enforced.
-	if userRow.OriginalSpaceQuota != nil {
-		auditDetails["old_original_quota"] = *userRow.OriginalSpaceQuota
-		auditDetails["cleared_temporary_expansion"] = true
-	}
-
-	cfg := config.GetConfig()
-	prefixConfig := ceph.StoragePrefixConfig{
-		User: cfg.Storage.Prefix.User, Account: cfg.Storage.Prefix.Account, Public: cfg.Storage.Prefix.Public,
-	}
-	userPath := fmt.Sprintf("/user/%s", userInfo.Space)
-	if err := ceph.SetCephDirectoryQuota(
-		mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), userPath, prefixConfig, req.Quota,
-	); err != nil {
-		klog.Errorf("SetUserSpaceQuota: set CephFS quota for user %q: %v", user, err)
-		auditDetails["ceph_applied"] = false
-		RecordOperationLog(c, constants.OpTypeSetStorageQuota, user, constants.OpStatusFailed, err.Error(), auditDetails)
-		resputil.HandleError(c, bizerr.Internal.FileSystemError.Wrap(err, "failed to apply the CephFS storage quota"))
-		return
-	}
-	auditDetails["ceph_applied"] = true
-	if err := db.Model(&model.User{}).Where("name = ?", user).Updates(map[string]any{
-		"space_quota":             req.Quota,
-		"original_space_quota":    nil,
-		"jobs_frozen":             false,
-		"shrink_stage":            nil,
-		"shrink_stage_updated_at": nil,
-	}).Error; err != nil {
-		rollbackErr := ceph.SetCephDirectoryQuota(
-			mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), userPath, prefixConfig, userRow.SpaceQuota,
+	auditDetails := map[string]any{"new_quota": req.Quota, "provider": ceph.StorageQuotaProvider()}
+	var appliedQuota int64
+	err := query.GetDB().WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("name = ?", username).First(&user).Error; err != nil {
+			return err
+		}
+		logicalPath := "/user/" + user.Space
+		oldQuota, err := ceph.GetCephDirectoryQuota(
+			mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, storagePrefixes(),
 		)
-		klog.Errorf("SetUserSpaceQuota: update database quota for user %q: %v; CephFS rollback: %v", user, err, rollbackErr)
-		auditDetails["rollback_succeeded"] = rollbackErr == nil
-		RecordOperationLog(c, constants.OpTypeSetStorageQuota, user, constants.OpStatusFailed, err.Error(), auditDetails)
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to save the storage quota"))
+		if err != nil {
+			return bizerr.Internal.FileSystemError.Wrap(err, "failed to read the current CephFS quota")
+		}
+		auditDetails["old_quota"] = oldQuota
+		if err := ceph.SetCephDirectoryQuota(
+			mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, storagePrefixes(), req.Quota,
+		); err != nil {
+			return bizerr.Internal.FileSystemError.Wrap(err, "failed to apply the CephFS quota")
+		}
+
+		rollback := func(cause error) error {
+			rollbackErr := ceph.SetCephDirectoryQuota(
+				mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, storagePrefixes(), oldQuota,
+			)
+			auditDetails["rollback_succeeded"] = rollbackErr == nil
+			if rollbackErr != nil {
+				return bizerr.Internal.FileSystemError.Wrap(
+					errors.Join(cause, rollbackErr),
+					"quota update failed and CephFS rollback also failed",
+				)
+			}
+			return cause
+		}
+
+		readback, err := ceph.GetCephDirectoryQuota(
+			mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), logicalPath, storagePrefixes(),
+		)
+		if err != nil {
+			return rollback(bizerr.Internal.FileSystemError.Wrap(err, "failed to verify the CephFS quota"))
+		}
+		if readback != req.Quota {
+			return rollback(bizerr.Internal.FileSystemError.New(fmt.Sprintf(
+				"CephFS quota readback is %d, expected %d", readback, req.Quota,
+			)))
+		}
+		result := tx.Model(&model.User{}).Where("id = ?", user.ID).Update("space_quota", readback)
+		if result.Error != nil {
+			return rollback(bizerr.Internal.DatabaseError.Wrap(result.Error, "failed to update the database quota mirror"))
+		}
+		if result.RowsAffected != 1 {
+			return rollback(bizerr.Internal.DatabaseError.New(fmt.Sprintf(
+				"database quota mirror update affected %d rows", result.RowsAffected,
+			)))
+		}
+		appliedQuota = readback
+		return nil
+	})
+	if err != nil {
+		statusErr := bizerr.Internal.FileSystemError.Wrap(err, "failed to update the storage quota")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			statusErr = bizerr.NotFound.DataBaseNotFound.Wrap(err, "user was not found")
+		}
+		RecordOperationLog(c, constants.OpTypeSetStorageQuota, username, constants.OpStatusFailed, err.Error(), auditDetails)
+		resputil.HandleError(c, statusErr)
 		return
 	}
 
-	RecordOperationLog(c, constants.OpTypeSetStorageQuota, user, constants.OpStatusSuccess, "", auditDetails)
-
+	auditDetails["ceph_applied"] = true
+	RecordOperationLog(c, constants.OpTypeSetStorageQuota, username, constants.OpStatusSuccess, "", auditDetails)
 	resputil.Success(c, gin.H{
-		"user":            user,
-		"quota":           req.Quota,
-		"unit":            "bytes",
-		"quota_formatted": formatSize(req.Quota),
-		"ceph_quota_set":  true,
+		"user": username, "quota": appliedQuota, "unit": "bytes",
+		"quota_formatted": formatSize(appliedQuota), "ceph_quota_set": true,
 	})
-}
-
-// AutoScaleUserSpaceQuota godoc
-//
-// @Summary Auto scale user space quota
-// @Description Auto scale the space quota for a user based on current usage
-// @Tags Storage
-// @Accept json
-// @Produce json
-// @Security Bearer
-// @Param user path string true "Username"
-// @Param body body AutoScaleRequest true "Auto scale configuration"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 400 {object} resputil.Response[any] "Request parameter error"
-// @Failure 404 {object} resputil.Response[any] "User not found"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
-func (mgr *StorageMgr) AutoScaleUserSpaceQuota(c *gin.Context) {
-	// 1. 获取用户名参数
-	user := c.Param("user")
-	if user == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
-		return
-	}
-
-	// 2. 解析请求体
-	var req AutoScaleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(err, "invalid request body"))
-		return
-	}
-
-	// 3. 获取用户信息和当前使用空间大小
-	db := query.GetDB()
-	var userInfo model.User
-	if err := db.Where("name = ?", user).First(&userInfo).Error; err != nil {
-		resputil.HandleError(c, bizerr.NotFound.DataBaseNotFound.Wrap(err, "user was not found"))
-		return
-	}
-
-	var userSpaceSize model.UserSpaceSize
-	if err := db.Where("user_id = ?", userInfo.ID).First(&userSpaceSize).Error; err != nil {
-		resputil.HandleError(c, bizerr.NotFound.DataBaseNotFound.Wrap(err, "user storage usage was not found"))
-		return
-	}
-
-	// 4. 计算新的配额
-	currentUsage := userSpaceSize.Size
-	newQuota := int64(float64(currentUsage) * req.ScaleUpRatio)
-
-	// 应用最小和最大配额限制
-	if req.MinQuota != -1 && newQuota < req.MinQuota {
-		newQuota = req.MinQuota
-	}
-	if req.MaxQuota != -1 && newQuota > req.MaxQuota {
-		newQuota = req.MaxQuota
-	}
-
-	// 5. 更新用户配额
-	if err := db.Model(&model.User{}).Where("name = ?", user).Update("space_quota", newQuota).Error; err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to update user storage quota"))
-		return
-	}
-
-	// 6. 实际设置 CephFS 目录配额
-	cfg := config.GetConfig()
-	prefixConfig := ceph.StoragePrefixConfig{
-		User:    cfg.Storage.Prefix.User,
-		Account: cfg.Storage.Prefix.Account,
-		Public:  cfg.Storage.Prefix.Public,
-	}
-
-	// 构建用户空间路径
-	userPath := fmt.Sprintf("/user/%s", userInfo.Space)
-
-	// 调用 SetCephDirectoryQuota 设置实际配额
-	cephErr := ceph.SetCephDirectoryQuota(
-		mgr.kubeClient, mgr.kubeConfig, ceph.StorageQuotaRookNamespace(), userPath, prefixConfig, newQuota,
-	)
-	if cephErr != nil {
-		// 记录错误但不影响响应，确保数据库更新成功
-		klog.Errorf("AutoScaleUserSpaceQuota: 设置用户 %s Ceph 配额失败: %v", user, cephErr)
-	}
-
-	// 7. 返回结果
-	resputil.Success(c, gin.H{
-		"user":                    user,
-		"current_usage":           currentUsage,
-		"new_quota":               newQuota,
-		"unit":                    "bytes",
-		"current_usage_formatted": formatSize(currentUsage),
-		"new_quota_formatted":     formatSize(newQuota),
-		"ceph_quota_set":          cephErr == nil,
-		"ceph_quota_error":        cephErr,
-	})
-}
-
-// RunAutoShrink triggers one manual scan that shrinks users currently in temporary
-// expansion state back to their original quota when it is safe to do so.
-func (mgr *StorageMgr) RunAutoShrink(c *gin.Context) {
-	result, err := patrol.RunAutoShrinkStorageExpansions(c.Request.Context(), &patrol.Clients{
-		KubeClient: mgr.kubeClient,
-		KubeConfig: mgr.kubeConfig,
-		PromClient: mgr.promClient,
-	})
-	if err != nil {
-		resputil.HandleError(c, bizerr.Internal.ServiceError.Wrap(err, "failed to run automatic quota shrink"))
-		return
-	}
-
-	resputil.Success(c, gin.H{
-		"message": result,
-	})
-}
-
-// ApplyExpansion godoc
-//
-// @Summary Apply temporary storage expansion for a user
-// @Description Save the current quota as original and set an expanded quota
-// @Tags Storage
-// @Accept json
-// @Produce json
-// @Security Bearer
-// @Param user path string true "Username"
-// @Param body body object true "expand_bytes: bytes to add on top of current quota"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 400 {object} resputil.Response[any] "Request parameter error"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
-func (mgr *StorageMgr) ApplyExpansion(c *gin.Context) {
-	user := c.Param("user")
-	if user == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
-		return
-	}
-
-	var req struct {
-		ExpandBytes   int64  `json:"expand_bytes" binding:"required,min=1"`
-		FreezeNewJobs bool   `json:"freeze_new_jobs"`
-		DecisionJobID string `json:"decision_job_id"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(err, "invalid request body"))
-		return
-	}
-
-	db := query.GetDB()
-
-	// 查询当前配额和原始配额
-	var row struct {
-		SpaceQuota         int64  `gorm:"column:space_quota"`
-		OriginalSpaceQuota *int64 `gorm:"column:original_space_quota"`
-	}
-	if err := db.Raw(
-		"SELECT space_quota, original_space_quota FROM users WHERE name = ? AND deleted_at IS NULL",
-		user,
-	).Scan(&row).Error; err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to query user storage quota"))
-		return
-	}
-
-	if row.OriginalSpaceQuota != nil {
-		resputil.HandleError(c, bizerr.Conflict.ResourceStatusError.New(
-			"the user already has a temporary quota expansion; revert it before expanding again",
-		))
-		return
-	}
-
-	newQuota := row.SpaceQuota + req.ExpandBytes
-
-	// 保存原始配额，并更新为新配额，同时设置 jobs_frozen
-	if err := db.Exec(
-		"UPDATE users "+
-			"SET original_space_quota = space_quota, space_quota = ?, jobs_frozen = ?, "+
-			"shrink_stage = ?, shrink_stage_updated_at = NOW() "+
-			"WHERE name = ? AND deleted_at IS NULL",
-		newQuota, req.FreezeNewJobs, "expanded", user,
-	).Error; err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to apply temporary quota expansion"))
-		return
-	}
-
-	// 同步到 CephFS
-	var userInfo model.User
-	if err := db.Where("name = ?", user).First(&userInfo).Error; err == nil {
-		cfg := config.GetConfig()
-		prefixConfig := ceph.StoragePrefixConfig{
-			User:    cfg.Storage.Prefix.User,
-			Account: cfg.Storage.Prefix.Account,
-			Public:  cfg.Storage.Prefix.Public,
-		}
-		if cephErr := ceph.SetCephDirectoryQuota(
-			mgr.kubeClient,
-			mgr.kubeConfig,
-			ceph.StorageQuotaRookNamespace(),
-			fmt.Sprintf("/user/%s", userInfo.Space),
-			prefixConfig,
-			newQuota,
-		); cephErr != nil {
-			klog.Errorf("ApplyExpansion: 设置用户 %s Ceph 配额失败: %v", user, cephErr)
-		}
-	}
-	if req.DecisionJobID != "" {
-		action := "manual_expand"
-		if req.FreezeNewJobs {
-			action = "manual_expand_and_freeze"
-		}
-		_ = storagegovernance.MarkDecisionExecution(c.Request.Context(), req.DecisionJobID, action, nil)
-	}
-
-	resputil.Success(c, gin.H{
-		"user":                     user,
-		"original_quota":           row.SpaceQuota,
-		"new_quota":                newQuota,
-		"original_quota_formatted": formatSize(row.SpaceQuota),
-		"new_quota_formatted":      formatSize(newQuota),
-		"jobs_frozen":              req.FreezeNewJobs,
-	})
-}
-
-// RevertExpansion godoc
-//
-// @Summary Revert temporary storage expansion for a user
-// @Description Restore the user's quota to the original value before expansion
-// @Tags Storage
-// @Accept json
-// @Produce json
-// @Security Bearer
-// @Param user path string true "Username"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 400 {object} resputil.Response[any] "Request parameter error"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
-func (mgr *StorageMgr) RevertExpansion(c *gin.Context) {
-	user := c.Param("user")
-	if user == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
-		return
-	}
-
-	db := query.GetDB()
-
-	var row struct {
-		SpaceQuota         int64  `gorm:"column:space_quota"`
-		OriginalSpaceQuota *int64 `gorm:"column:original_space_quota"`
-	}
-	if err := db.Raw(
-		"SELECT space_quota, original_space_quota FROM users WHERE name = ? AND deleted_at IS NULL",
-		user,
-	).Scan(&row).Error; err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to query user storage quota"))
-		return
-	}
-
-	if row.OriginalSpaceQuota == nil {
-		resputil.HandleError(c, bizerr.Conflict.ResourceStatusError.New(
-			"the user does not have a temporary quota expansion to revert",
-		))
-		return
-	}
-
-	originalQuota := *row.OriginalSpaceQuota
-
-	// 查询用户 ID 和当前实际用量，决定是否同时解冻
-	var userIDRow struct {
-		ID uint `gorm:"column:id"`
-	}
-	db.Raw("SELECT id FROM users WHERE name = ? AND deleted_at IS NULL", user).Scan(&userIDRow)
-
-	var currentSize int64
-	var spaceSize model.UserSpaceSize
-	if err := db.Where("user_id = ?", userIDRow.ID).First(&spaceSize).Error; err == nil {
-		currentSize = spaceSize.Size
-	}
-
-	// 只有还原后的理论配额大于当前用量时才自动解冻；否则保持冻结状态
-	shouldUnfreeze := originalQuota <= 0 || currentSize < originalQuota
-	if shouldUnfreeze {
-		if err := db.Exec(
-			"UPDATE users "+
-				"SET space_quota = ?, original_space_quota = NULL, jobs_frozen = false, "+
-				"shrink_stage = NULL, shrink_stage_updated_at = NULL "+
-				"WHERE name = ? AND deleted_at IS NULL",
-			originalQuota,
-			user,
-		).Error; err != nil {
-			resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to revert storage quota"))
-			return
-		}
-	} else {
-		// 仅还原配额，不解冻（用量仍超出理论配额）
-		if err := db.Exec(
-			"UPDATE users "+
-				"SET space_quota = ?, original_space_quota = NULL, "+
-				"shrink_stage = NULL, shrink_stage_updated_at = NULL "+
-				"WHERE name = ? AND deleted_at IS NULL",
-			originalQuota,
-			user,
-		).Error; err != nil {
-			resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to revert storage quota"))
-			return
-		}
-	}
-
-	// 同步到 CephFS
-	var userInfo model.User
-	if err := db.Where("name = ?", user).First(&userInfo).Error; err == nil {
-		cfg := config.GetConfig()
-		prefixConfig := ceph.StoragePrefixConfig{
-			User:    cfg.Storage.Prefix.User,
-			Account: cfg.Storage.Prefix.Account,
-			Public:  cfg.Storage.Prefix.Public,
-		}
-		if cephErr := ceph.SetCephDirectoryQuota(
-			mgr.kubeClient,
-			mgr.kubeConfig,
-			ceph.StorageQuotaRookNamespace(),
-			fmt.Sprintf("/user/%s", userInfo.Space),
-			prefixConfig,
-			originalQuota,
-		); cephErr != nil {
-			klog.Errorf("RevertExpansion: 设置用户 %s Ceph 配额失败: %v", user, cephErr)
-		}
-	}
-
-	resputil.Success(c, gin.H{
-		"user":                     user,
-		"reverted_quota":           originalQuota,
-		"reverted_quota_formatted": formatSize(originalQuota),
-		"jobs_unfrozen":            shouldUnfreeze,
-	})
-}
-
-// UnfreezeJobs godoc
-//
-// @Summary Manually unfreeze job creation for a user
-// @Description Clear the jobs_frozen flag, allowing the user to create new jobs again
-// @Tags Storage
-// @Produce json
-// @Security Bearer
-// @Param user path string true "Username"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 400 {object} resputil.Response[any] "Request parameter error"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
-func (mgr *StorageMgr) UnfreezeJobs(c *gin.Context) {
-	user := c.Param("user")
-	if user == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
-		return
-	}
-
-	db := query.GetDB()
-	if err := db.Exec("UPDATE users SET jobs_frozen = false WHERE name = ? AND deleted_at IS NULL", user).Error; err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to unfreeze user jobs"))
-		return
-	}
-
-	resputil.Success(c, gin.H{"user": user, "jobs_frozen": false})
-}
-
-// FreezeJobs manually freezes job creation for a user and optionally binds the action to a decision record.
-func (mgr *StorageMgr) FreezeJobs(c *gin.Context) {
-	user := c.Param("user")
-	if user == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
-		return
-	}
-
-	var req struct {
-		DecisionJobID string `json:"decision_job_id"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
-		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(err, "invalid request body"))
-		return
-	}
-
-	db := query.GetDB()
-	if err := db.Exec("UPDATE users SET jobs_frozen = true WHERE name = ? AND deleted_at IS NULL", user).Error; err != nil {
-		if req.DecisionJobID != "" {
-			_ = storagegovernance.MarkDecisionExecution(c.Request.Context(), req.DecisionJobID, "manual_freeze_failed", err)
-		}
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to freeze user jobs"))
-		return
-	}
-
-	if req.DecisionJobID != "" {
-		_ = storagegovernance.MarkDecisionExecution(c.Request.Context(), req.DecisionJobID, "manual_freeze", nil)
-	}
-
-	resputil.Success(c, gin.H{"user": user, "jobs_frozen": true})
-}
-
-// TriggerLLMDecision godoc
-//
-// @Summary Trigger LLM storage expansion decision for a user
-// @Description Calls Claude agent to analyze whether a user needs temporary storage expansion
-// @Tags Storage
-// @Accept json
-// @Produce json
-// @Security Bearer
-// @Param user path string true "Username"
-// @Success 200 {object} resputil.Response[any] "Success"
-// @Failure 500 {object} resputil.Response[any] "Other errors"
-// TriggerLLMDecision 异步启动 LLM 分析，立即返回 job_id
-func (mgr *StorageMgr) TriggerLLMDecision(c *gin.Context) {
-	user := c.Param("user")
-	if user == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("username is required"))
-		return
-	}
-
-	engine := storagegovernance.NewEngine(
-		mgr.kubeClient,
-		mgr.kubeConfig,
-		mgr.promClient,
-		storagegovernance.DefaultConstraintConfig(),
-	)
-	jobID, err := engine.StartAsyncDecision(context.Background(), storagegovernance.DecisionRequest{
-		Username:      user,
-		Source:        model.StorageDecisionSourceManual,
-		TriggerReason: "manual llm decision request",
-	})
-	if err != nil {
-		klog.Errorf("TriggerLLMDecision: user=%s err=%v", user, err)
-		resputil.HandleError(c, bizerr.Internal.ServiceError.Wrap(err, "failed to start storage decision analysis"))
-		return
-	}
-
-	resputil.Success(c, gin.H{"job_id": jobID})
-}
-
-// GetLLMDecisionStatus 查询 LLM 分析任务状态
-func (mgr *StorageMgr) GetLLMDecisionStatus(c *gin.Context) {
-	jobID := c.Param("job_id")
-
-	job, err := storagegovernance.GetDecisionStatus(c.Request.Context(), jobID)
-
-	if err != nil {
-		resputil.HandleError(c, bizerr.NotFound.DataBaseNotFound.Wrap(err, "storage decision job was not found"))
-		return
-	}
-
-	resputil.Success(c, job)
-}
-
-// formatSize 格式化大小为人类可读格式
-// ListStorageDecisions returns paginated persisted storage decision records.
-func (mgr *StorageMgr) ListStorageDecisions(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-
-	result, err := storagegovernance.ListDecisionRecords(
-		c.Request.Context(),
-		page,
-		pageSize,
-		c.Query("user"),
-		c.Query("status"),
-		c.Query("source"),
-	)
-	if err != nil {
-		resputil.HandleError(c, bizerr.Internal.DatabaseError.Wrap(err, "failed to list storage decisions"))
-		return
-	}
-
-	resputil.Success(c, result)
-}
-
-// GetStorageDecision returns one persisted storage decision record with full details.
-func (mgr *StorageMgr) GetStorageDecision(c *gin.Context) {
-	jobID := c.Param("job_id")
-	if jobID == "" {
-		resputil.HandleError(c, bizerr.BadRequest.MissingParameter.New("job_id is required"))
-		return
-	}
-
-	result, err := storagegovernance.GetDecisionRecord(c.Request.Context(), jobID)
-	if err != nil {
-		resputil.HandleError(c, bizerr.NotFound.DataBaseNotFound.Wrap(err, "storage decision was not found"))
-		return
-	}
-
-	resputil.Success(c, result)
-}
-
-// ReplayStorageDecisions re-evaluates stored decisions under the current or overridden safety policy.
-func (mgr *StorageMgr) ReplayStorageDecisions(c *gin.Context) {
-	var req struct {
-		Limit                    int      `json:"limit"`
-		MaxExpandRatio           *float64 `json:"max_expand_ratio"`
-		MaxExpandBytes           *int64   `json:"max_expand_bytes"`
-		MinPlatformReservedRatio *float64 `json:"min_platform_reserved_ratio"`
-		MinPlatformReservedBytes *int64   `json:"min_platform_reserved_bytes"`
-		ExpansionCooldownHours   *int     `json:"expansion_cooldown_hours"`
-		ForceFreezeWhenOverQuota *bool    `json:"force_freeze_when_over_quota"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
-		resputil.HandleError(c, bizerr.BadRequest.InvalidRequest.Wrap(err, "invalid replay request"))
-		return
-	}
-
-	cfg := storagegovernance.DefaultConstraintConfig()
-	if req.MaxExpandRatio != nil {
-		cfg.MaxExpandRatio = *req.MaxExpandRatio
-	}
-	if req.MaxExpandBytes != nil {
-		cfg.MaxExpandBytes = *req.MaxExpandBytes
-	}
-	if req.MinPlatformReservedRatio != nil {
-		cfg.MinPlatformReservedRatio = *req.MinPlatformReservedRatio
-	}
-	if req.MinPlatformReservedBytes != nil {
-		cfg.MinPlatformReservedBytes = *req.MinPlatformReservedBytes
-	}
-	if req.ExpansionCooldownHours != nil {
-		cfg.ExpansionCooldown = time.Duration(*req.ExpansionCooldownHours) * time.Hour
-	}
-	if req.ForceFreezeWhenOverQuota != nil {
-		cfg.ForceFreezeWhenOverQuota = *req.ForceFreezeWhenOverQuota
-	}
-
-	summary, err := storagegovernance.ReplayStoredDecisions(c.Request.Context(), cfg, req.Limit)
-	if err != nil {
-		resputil.HandleError(c, bizerr.Internal.ServiceError.Wrap(err, "failed to replay storage decisions"))
-		return
-	}
-
-	resputil.Success(c, summary)
 }
 
 func formatSize(bytes int64) string {
-	const unit = 1024
 	if bytes < 0 {
-		return "Unknown"
+		return "Unlimited"
 	}
-	if bytes == 0 {
-		return "0 B"
-	}
+	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}

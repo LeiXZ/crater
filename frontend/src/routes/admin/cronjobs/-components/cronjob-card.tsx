@@ -51,21 +51,18 @@ import LoadableButton from '@/components/button/loadable-button'
 
 import {
   CronJobConfigStatus,
-  apiAdminExecutePatrolJob,
   apiAdminLongTimeRunningJobsCleanup,
   apiAdminLowGPUUsageJobsCleanup,
   apiAdminWaitingCustomJobCancel,
   apiAdminWaitingJupyterJobCancel,
   apiJobScheduleChangeAdmin,
 } from '@/services/api/vcjob'
-import { IResponse } from '@/services/types'
 
 import { cn } from '@/lib/utils'
 
 export interface CronJobCardProps {
   jobId: string
   jobName: string
-  jobDescription?: string
   jobType: string
   status: CronJobConfigStatus
   spec: string
@@ -78,49 +75,52 @@ const HIDDEN_PARAMS = ['jobTypes']
 const DAY_PARAMS = ['batchDays', 'interactiveDays']
 const MINUTE_PARAMS = ['timeRange', 'waitTime', 'waitMinitues']
 
-interface CleanupData {
-  deleted?: unknown[]
-  reminded?: unknown[]
+interface CleanupResult {
+  data: {
+    deleted: unknown[]
+    reminded: unknown[]
+  }
 }
-
-type ExecuteResult = IResponse<CleanupData | string | unknown>
 
 const executeJobMap: Record<
   string,
-  (params: Record<string, number | string | string[]>) => Promise<ExecuteResult>
+  (params: Record<string, number | string | string[]>) => Promise<CleanupResult>
 > = {
   'clean-long-time-job': async (params) => {
-    return apiAdminLongTimeRunningJobsCleanup({
+    const res = await apiAdminLongTimeRunningJobsCleanup({
       batchDays: params.batchDays as number,
       interactiveDays: params.interactiveDays as number,
     })
+    return res
   },
   'clean-low-gpu-util-job': async (params) => {
-    return apiAdminLowGPUUsageJobsCleanup({
+    const res = await apiAdminLowGPUUsageJobsCleanup({
       timeRange: params.timeRange as number,
       util: params.util as number,
       waitTime: params.waitTime as number,
     })
+    return res
   },
   'clean-waiting-jupyter': async (params) => {
-    return apiAdminWaitingJupyterJobCancel({
+    const res = await apiAdminWaitingJupyterJobCancel({
       waitMinutes: params.waitMinitues as number,
     })
+    return res
   },
   'clean-waiting-custom': async (params) => {
-    return apiAdminWaitingCustomJobCancel({
+    const res = await apiAdminWaitingCustomJobCancel({
       waitMinutes: params.waitMinitues as number,
     })
+    return res
   },
   'trigger-gpu-analysis-job': async () => {
-    return apiAdminExecutePatrolJob('trigger-gpu-analysis-job')
+    throw new Error('GPU analysis job execution not implemented yet')
   },
 }
 
 export default function CronJobCard({
   jobId,
   jobName,
-  jobDescription,
   jobType,
   status,
   spec,
@@ -144,12 +144,13 @@ export default function CronJobCard({
 
   const updateMutation = useMutation({
     mutationFn: async () => {
-      return apiJobScheduleChangeAdmin({
+      const res = await apiJobScheduleChangeAdmin({
         name: jobId,
         status: enabled ? CronJobConfigStatus.Idle : CronJobConfigStatus.Suspended,
         spec: cronSpec,
         config: jobParams,
       })
+      return res
     },
     onSuccess: () => {
       toast.success(t('cronPolicy.updateSuccess'))
@@ -167,25 +168,20 @@ export default function CronJobCard({
       if (!executeFunc) {
         throw new Error('Job execution not implemented')
       }
-      return executeFunc(jobParams)
+      return await executeFunc(jobParams)
     },
     onSuccess: (data) => {
-      if (jobType === 'patrol_function') {
-        toast.success(t('cronPolicy.executeSuccess'))
-      } else {
-        const cleanupData = (data.data ?? {}) as CleanupData
-        const deleted = cleanupData.deleted || []
-        const reminded = cleanupData.reminded || []
-        const total = deleted.length + reminded.length
+      const deleted = data.data.deleted || []
+      const reminded = data.data.reminded || []
+      const total = deleted.length + reminded.length
 
-        toast.success(
-          t('cronPolicy.cleanupSummary', {
-            total,
-            deleted: deleted.length,
-            reminded: reminded.length,
-          })
-        )
-      }
+      toast.success(
+        t('cronPolicy.cleanupSummary', {
+          total,
+          deleted: deleted.length,
+          reminded: reminded.length,
+        })
+      )
       onUpdate()
     },
     onError: (error: Error) => {
@@ -280,9 +276,6 @@ export default function CronJobCard({
           <div className="min-w-0 space-y-1">
             <CardTitle className="truncate text-base leading-6">{t(jobName)}</CardTitle>
             <p className="text-muted-foreground truncate font-mono text-xs">{jobId}</p>
-            {jobDescription && (
-              <p className="text-muted-foreground line-clamp-2 text-sm">{t(jobDescription)}</p>
-            )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {hasChanges && <Badge variant="secondary">{t('cronPolicy.unsaved')}</Badge>}
@@ -389,6 +382,7 @@ export default function CronJobCard({
               size="sm"
               isLoading={executeMutation.isPending}
               isLoadingText={t('cronPolicy.executing')}
+              disabled={jobType === 'patrol_function'}
             >
               <PlayIcon className="mr-1 size-3.5" />
               {t('cronPolicy.executeNow')}

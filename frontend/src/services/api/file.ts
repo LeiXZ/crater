@@ -58,7 +58,6 @@ export const apiGetDatasetFiles = (datasetID: number, path: string) =>
   )
 
 export interface DirectorySize {
-  path: string
   size: number
   unit: string
   formatted: string
@@ -81,20 +80,9 @@ export interface MyQuota {
 export const apiGetMyQuota = () => apiGet<IResponse<MyQuota>>('v1/storage/my-quota')
 
 export interface StorageCapabilities {
-  backend: string
-  configured: boolean
   quota_enabled: boolean
-  pvc_name: string
-  pvc_namespace?: string
-  pv_name?: string
-  csi_driver?: string
-  quota_provider: 'auto' | 'storageServer' | 'toolbox' | 'disabled'
-  storage_server_available: boolean
-  toolbox_available: boolean
   usage_readable: boolean
   quota_readable: boolean
-  quota_writable: boolean
-  reasons?: string[]
 }
 
 export const apiGetStorageCapabilities = () =>

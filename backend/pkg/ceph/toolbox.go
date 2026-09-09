@@ -105,6 +105,31 @@ func getToolboxUsage(
 	return usage, nil
 }
 
+func getToolboxQuota(
+	ctx context.Context,
+	clientset kubernetes.Interface,
+	config *rest.Config,
+	namespace, relativePath string,
+) (int64, error) {
+	pod, storageRoot, err := resolveToolboxStorageRoot(ctx, clientset, config, namespace)
+	if err != nil {
+		return 0, err
+	}
+	targetPath, err := toolboxStoragePath(storageRoot, relativePath)
+	if err != nil {
+		return 0, err
+	}
+	value, err := readToolboxXattr(ctx, clientset, config, pod, targetPath, cephQuotaBytesXattr)
+	if err != nil {
+		return 0, err
+	}
+	quota, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse toolbox quota %q: %w", value, err)
+	}
+	return normalizeCephQuota(quota), nil
+}
+
 func setToolboxQuota(
 	ctx context.Context,
 	clientset kubernetes.Interface,

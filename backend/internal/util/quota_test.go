@@ -22,7 +22,7 @@ func TestCheckStorageQuotaDisabledSkipsDatabase(t *testing.T) {
 		cfg.Storage.Quota.Enabled = originalEnabled
 	})
 
-	if err := CheckStorageQuota("database-is-not-initialized"); err != nil {
+	if err := CheckStorageQuota("database-is-not-initialized", nil, nil); err != nil {
 		t.Fatalf("CheckStorageQuota() with quota disabled returned error: %v", err)
 	}
 }

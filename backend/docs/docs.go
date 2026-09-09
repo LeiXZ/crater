@@ -3236,17 +3236,17 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Detect whether the configured storage supports CephFS usage and quota operations",
+                "description": "Probe storage quota providers and return diagnostics to platform administrators",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Get storage quota capabilities",
+                "summary": "Get detailed storage quota capabilities",
                 "responses": {
                     "200": {
-                        "description": "Success",
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilities"
                         }
@@ -3261,17 +3261,13 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Get the size of all user spaces from database",
-                "consumes": [
-                    "application/json"
-                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Get all user space sizes",
+                "summary": "Get paginated user storage usage and quotas",
                 "parameters": [
                     {
                         "type": "integer",
@@ -3281,20 +3277,14 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "Page size",
+                        "description": "Page size, from 1 to 100",
                         "name": "pageSize",
                         "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "Success",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "500": {
-                        "description": "Other errors",
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
@@ -3309,25 +3299,18 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Read current CephFS usage for every user directory and update the usage cache",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Refresh all user space usage",
+                "summary": "Refresh user storage usage and reconcile quota mirrors",
                 "responses": {
                     "200": {
-                        "description": "Success",
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-github_com_raids-lab_crater_pkg_patrol_StorageUsageRefreshResult"
-                        }
-                    },
-                    "500": {
-                        "description": "Other errors",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
                     }
                 }
@@ -3340,7 +3323,6 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Set the space quota for a user",
                 "consumes": [
                     "application/json"
                 ],
@@ -3350,7 +3332,7 @@ const docTemplate = `{
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Set user space quota",
+                "summary": "Set a user's CephFS storage quota",
                 "parameters": [
                     {
                         "type": "string",
@@ -3371,25 +3353,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "Success",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "400": {
-                        "description": "Request parameter error",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "404": {
-                        "description": "User not found",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "500": {
-                        "description": "Other errors",
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
@@ -3501,7 +3465,7 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "更新 LLM 的连接信息。如果 validate 为 true，会尝试连接 /models 接口，失败则不保存。",
+                "description": "更新 LLM 的连接信息。如果 validate 为 true，会尝试连接 /check 接口，失败则不保存。",
                 "consumes": [
                     "application/json"
                 ],
@@ -8602,57 +8566,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/v1/operations/cronjob/execute": {
-            "post": {
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ],
-                "description": "Execute a patrol job immediately",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Operations"
-                ],
-                "summary": "Execute patrol job",
-                "parameters": [
-                    {
-                        "description": "Job name",
-                        "name": "jobName",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "400": {
-                        "description": "Request parameter error",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "500": {
-                        "description": "Other errors",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    }
-                }
-            }
-        },
         "/v1/operations/keep/{name}": {
             "put": {
                 "description": "set KeepWhenLowResourceUsage of the job to the opposite value",
@@ -8989,19 +8902,19 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Detect whether the configured storage supports CephFS usage and quota operations",
+                "description": "Return non-sensitive storage capability flags for the current user",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Get storage quota capabilities",
+                "summary": "Get storage quota capability summary",
                 "responses": {
                     "200": {
-                        "description": "Success",
+                        "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilities"
+                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilitySummary"
                         }
                     }
                 }
@@ -9014,21 +8927,18 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Get the size of a directory in CephFS using getfattr command",
-                "consumes": [
-                    "application/json"
-                ],
+                "description": "Read the current user's user, account, or public storage root usage",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Get directory size in CephFS",
+                "summary": "Get permitted storage root usage",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Directory path",
+                        "description": "Storage scope: user, account, or public",
                         "name": "path",
                         "in": "path",
                         "required": true
@@ -9036,19 +8946,19 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "Success",
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
                     },
                     "400": {
-                        "description": "Request parameter error",
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
                     },
-                    "500": {
-                        "description": "Other errors",
+                    "403": {
+                        "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
@@ -9063,23 +8973,16 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "Get the storage quota for the currently authenticated user",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Storage"
                 ],
-                "summary": "Get current user's storage quota",
+                "summary": "Get the current user's enforced storage quota",
                 "responses": {
                     "200": {
-                        "description": "Success",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
-                        }
-                    },
-                    "500": {
-                        "description": "Other errors",
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_raids-lab_crater_internal_resputil.Response-any"
                         }
@@ -11794,6 +11697,21 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_raids-lab_crater_internal_resputil.Response-internal_handler_StorageCapabilitySummary": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "description": "依然保持 int (ErrorCode) 类型",
+                    "type": "integer"
+                },
+                "data": {
+                    "$ref": "#/definitions/internal_handler.StorageCapabilitySummary"
+                },
+                "msg": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_raids-lab_crater_internal_resputil.Response-internal_handler_TokenReq": {
             "type": "object",
             "properties": {
@@ -12530,38 +12448,6 @@ const docTemplate = `{
                 },
                 "ldapHelp": {
                     "type": "string"
-                }
-            }
-        },
-        "internal_handler.AutoScaleRequest": {
-            "type": "object",
-            "required": [
-                "max_quota",
-                "min_quota",
-                "scale_down_ratio",
-                "scale_up_ratio"
-            ],
-            "properties": {
-                "max_quota": {
-                    "description": "最大配额，-1 表示无限制",
-                    "type": "integer",
-                    "minimum": -1
-                },
-                "min_quota": {
-                    "description": "最小配额，-1 表示无限制",
-                    "type": "integer",
-                    "minimum": -1
-                },
-                "scale_down_ratio": {
-                    "description": "缩容比例，如 0.8 表示缩容到当前使用的 0.8 倍",
-                    "type": "number",
-                    "maximum": 1,
-                    "minimum": 0.1
-                },
-                "scale_up_ratio": {
-                    "description": "扩容比例，如 1.5 表示扩容到当前使用的 1.5 倍",
-                    "type": "number",
-                    "minimum": 1
                 }
             }
         },
@@ -13478,6 +13364,20 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handler.StorageCapabilitySummary": {
+            "type": "object",
+            "properties": {
+                "quota_enabled": {
+                    "type": "boolean"
+                },
+                "quota_readable": {
+                    "type": "boolean"
+                },
+                "usage_readable": {
+                    "type": "boolean"
+                }
+            }
+        },
         "internal_handler.SwitchQueueReq": {
             "type": "object",
             "required": [
@@ -13669,6 +13569,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "validate": {
+                    "description": "是否立即校验连接",
                     "type": "boolean"
                 }
             }

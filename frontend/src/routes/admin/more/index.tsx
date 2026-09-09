@@ -98,11 +98,6 @@ function RouteComponent() {
     queryFn: () => apiAdminGetPodBandwidthConfig().then((res) => res.data),
   })
 
-  const { data: billingStatusData } = useQuery({
-    queryKey: ['admin', 'system-config', 'billing-status'],
-    queryFn: () => apiAdminGetBillingStatus().then((res) => res.data),
-  })
-
   const [backfillEnabled, setBackfillEnabled] = useState(false)
   const [queueQuotaEnabled, setQueueQuotaEnabled] = useState(false)
   const [prequeueWaitingToleranceSeconds, setPrequeueWaitingToleranceSeconds] = useState('')
@@ -110,44 +105,45 @@ function RouteComponent() {
   const [maxTotalActivationsPerRound, setMaxTotalActivationsPerRound] = useState('')
   const [prequeueCandidateSize, setPrequeueCandidateSize] = useState('')
 
-  useEffect(() => {
-    if (!llmConfigData) {
-      return
-    }
+  const { data: billingStatusData } = useQuery({
+    queryKey: ['admin', 'system-config', 'billing-status'],
+    queryFn: () => apiAdminGetBillingStatus().then((res) => res.data),
+  })
 
-    llmForm.reset({
-      baseUrl: llmConfigData.baseUrl,
-      modelName: llmConfigData.modelName,
-      apiKey: llmConfigData.apiKey || '',
-    })
+  useEffect(() => {
+    if (llmConfigData) {
+      llmForm.reset({
+        baseUrl: llmConfigData.baseUrl,
+        modelName: llmConfigData.modelName,
+        apiKey: llmConfigData.apiKey || '',
+      })
+    }
   }, [llmConfigData, llmForm])
 
   useEffect(() => {
-    if (!prequeueConfigData) {
-      return
+    if (prequeueConfigData) {
+      setBackfillEnabled(prequeueConfigData.backfillEnabled)
+      setQueueQuotaEnabled(prequeueConfigData.queueQuotaEnabled)
+      setPrequeueWaitingToleranceSeconds(
+        String(prequeueConfigData.normalJobWaitingToleranceSeconds ?? '')
+      )
+      setActivateTickerIntervalSeconds(
+        String(prequeueConfigData.activateTickerIntervalSeconds ?? '')
+      )
+      setMaxTotalActivationsPerRound(String(prequeueConfigData.maxTotalActivationsPerRound ?? ''))
+      setPrequeueCandidateSize(String(prequeueConfigData.prequeueCandidateSize ?? ''))
     }
-
-    setBackfillEnabled(prequeueConfigData.backfillEnabled)
-    setQueueQuotaEnabled(prequeueConfigData.queueQuotaEnabled)
-    setPrequeueWaitingToleranceSeconds(
-      String(prequeueConfigData.normalJobWaitingToleranceSeconds ?? '')
-    )
-    setActivateTickerIntervalSeconds(String(prequeueConfigData.activateTickerIntervalSeconds ?? ''))
-    setMaxTotalActivationsPerRound(String(prequeueConfigData.maxTotalActivationsPerRound ?? ''))
-    setPrequeueCandidateSize(String(prequeueConfigData.prequeueCandidateSize ?? ''))
   }, [prequeueConfigData])
 
-  const handleBusinessLogicError = (error: unknown, businessLogicMessage: string) => {
-    if (typeof error !== 'object' || error === null || !('data' in error)) {
-      return
-    }
+  const handleError = (error: unknown) => {
+    if (typeof error === 'object' && error !== null && 'data' in error) {
+      const errorData = (error as { data: IErrorResponse }).data
+      const errorCode = errorData?.code
 
-    const errorData = (error as { data: IErrorResponse }).data
-    const errorCode = errorData?.code
-
-    if (errorCode === ERROR_RESOURCE_STATUS_ERROR) {
-      markApiErrorHandled(error)
-      toast.error(businessLogicMessage)
+      if (errorCode === ERROR_RESOURCE_STATUS_ERROR) {
+        markApiErrorHandled(error)
+        toast.error(t('systemConfig.gpuAnalysis.error.llmCheckFailed'))
+      }
     }
   }
 
@@ -160,37 +156,37 @@ function RouteComponent() {
       }),
     onSuccess: (_, vars) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'system-config', 'llm'] })
-      toast.success(
-        vars.validate ? t('systemConfig.llm.testAndSaveSuccess') : t('systemConfig.llm.saveSuccess')
-      )
+      if (vars.validate) {
+        toast.success(t('systemConfig.llm.testAndSaveSuccess'))
+      } else {
+        toast.success(t('systemConfig.llm.saveSuccess'))
+      }
     },
-    onError: (error) =>
-      handleBusinessLogicError(error, t('systemConfig.gpuAnalysis.error.llmCheckFailed')),
+    onError: handleError,
   })
 
   const resetLLMMutation = useMutation({
     mutationFn: apiAdminResetLLMConfig,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'system-config', 'llm'] })
+
       queryClient.invalidateQueries({ queryKey: ['admin', 'system-config', 'gpu-status'] })
       toast.success(t('common.resetSuccess'))
     },
-    onError: (error) =>
-      handleBusinessLogicError(error, t('systemConfig.gpuAnalysis.error.llmCheckFailed')),
+    onError: handleError,
   })
 
   const toggleGpuMutation = useMutation({
     mutationFn: apiAdminSetGpuAnalysisStatus,
     onSuccess: (_data, newStatus) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'system-config', 'gpu-status'] })
-      toast.success(
-        newStatus
-          ? t('systemConfig.gpuAnalysis.enabledSuccess')
-          : t('systemConfig.gpuAnalysis.disabledSuccess')
-      )
+
+      const message = newStatus
+        ? t('systemConfig.gpuAnalysis.enabledSuccess')
+        : t('systemConfig.gpuAnalysis.disabledSuccess')
+      toast.success(message)
     },
-    onError: (error) =>
-      handleBusinessLogicError(error, t('systemConfig.gpuAnalysis.error.llmCheckFailed')),
+    onError: handleError,
   })
 
   const updateBillingMutation = useMutation({
@@ -236,6 +232,38 @@ function RouteComponent() {
     onError: showErrorToast,
   })
 
+  const handleLlmSubmit = (values: LlmFormSchema, validate: boolean) => {
+    updateLLMMutation.mutate({ data: values, validate })
+  }
+
+  const handleLlmReset = () => {
+    resetLLMMutation.mutate()
+  }
+
+  const handleGpuToggle = async (checked: boolean) => {
+    if (checked) {
+      const isValid = await llmForm.trigger()
+      if (!isValid) {
+        toast.error(t('systemConfig.llm.validation.formInvalid'))
+        return
+      }
+
+      toast.info(t('systemConfig.gpuAnalysis.verifyingLLM'))
+      const currentLlmValues = llmForm.getValues()
+
+      updateLLMMutation.mutate(
+        { data: currentLlmValues, validate: true },
+        {
+          onSuccess: () => {
+            toggleGpuMutation.mutate(true)
+          },
+        }
+      )
+    } else {
+      toggleGpuMutation.mutate(false)
+    }
+  }
+
   const buildPrequeuePayload = () => ({
     backfillEnabled,
     queueQuotaEnabled,
@@ -274,7 +302,7 @@ function RouteComponent() {
       invalidatePrequeueConfig()
       toast.success(t('systemConfig.prequeue.saveSuccess'))
     },
-    onError: showErrorToast,
+    onError: handleError,
   })
 
   const updateModelDownloadLimitMutation = useMutation({
@@ -298,41 +326,14 @@ function RouteComponent() {
     onError: showErrorToast,
   })
 
-  const handleLlmSubmit = (values: LlmFormSchema, validate: boolean) => {
-    updateLLMMutation.mutate({ data: values, validate })
-  }
-
-  const handleGpuToggle = async (checked: boolean) => {
-    if (!checked) {
-      toggleGpuMutation.mutate(false)
-      return
-    }
-
-    const isValid = await llmForm.trigger()
-    if (!isValid) {
-      toast.error(t('systemConfig.llm.validation.formInvalid'))
-      return
-    }
-
-    toast.info(t('systemConfig.gpuAnalysis.verifyingLLM'))
-    const currentLlmValues = llmForm.getValues()
-
-    updateLLMMutation.mutate(
-      { data: currentLlmValues, validate: true },
-      {
-        onSuccess: () => {
-          toggleGpuMutation.mutate(true)
-        },
-      }
-    )
-  }
-
   const handlePrequeueSubmit = () => {
     if (!validatePrequeuePositiveIntegers()) {
       return
     }
     updatePrequeueMutation.mutate()
   }
+
+  const isPrequeueConfigPending = updatePrequeueMutation.isPending
 
   return (
     <div className="space-y-6">
@@ -350,7 +351,7 @@ function RouteComponent() {
           form={llmForm}
           isPending={updateLLMMutation.isPending || resetLLMMutation.isPending}
           onSubmit={handleLlmSubmit}
-          onReset={() => resetLLMMutation.mutate()}
+          onReset={handleLlmReset}
         />
 
         <GpuAnalysis
@@ -364,7 +365,7 @@ function RouteComponent() {
         <PrequeueSettings
           backfillEnabled={backfillEnabled}
           queueQuotaEnabled={queueQuotaEnabled}
-          isPending={updatePrequeueMutation.isPending}
+          isPending={isPrequeueConfigPending}
           waitingToleranceSeconds={prequeueWaitingToleranceSeconds}
           activateTickerIntervalSeconds={activateTickerIntervalSeconds}
           maxTotalActivationsPerRound={maxTotalActivationsPerRound}

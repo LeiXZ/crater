@@ -37,6 +37,26 @@ func TestSetDirectoryQuotaRejectsAmbiguousValues(t *testing.T) {
 	}
 }
 
+func TestNormalizeCephQuota(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		got  int64
+		want int64
+	}{
+		{name: "Ceph unlimited sentinel", got: normalizeCephQuota(0), want: -1},
+		{name: "positive quota", got: normalizeCephQuota(1024), want: 1024},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if test.got != test.want {
+				t.Fatalf("normalizeCephQuota() = %d, want %d", test.got, test.want)
+			}
+		})
+	}
+}
+
 func TestLogicalPathToStorageRelativePath(t *testing.T) {
 	t.Parallel()
 

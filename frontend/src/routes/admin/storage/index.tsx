@@ -1,7 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { ColumnDef } from '@tanstack/react-table'
-import { RefreshCcw } from 'lucide-react'
+import { AlertTriangle, RefreshCcw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -25,20 +25,20 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
-import { DataTable } from '@/components/query-table'
 import { DataTableColumnHeader } from '@/components/query-table/column-header'
+import { RemoteDataTable } from '@/components/query-table/remote'
 
 import {
-  PagedUserSpaces,
   UserSpace,
   apiAdminGetStorageCapabilities,
   apiAdminGetUserSpaces,
   apiAdminRefreshUserSpaceUsage,
   apiAdminSetUserSpaceQuota,
 } from '@/services/api/storage'
-import { IResponse } from '@/services/types'
 
-import StorageQuotaAuditPanel from './-components/storage-governance-panel'
+import useRemoteTableState from '@/hooks/use-remote-table-state'
+
+import StorageQuotaAuditPanel from './-components/storage-quota-audit-panel'
 
 export const Route = createFileRoute('/admin/storage/')({
   component: StorageManagementPage,
@@ -104,6 +104,7 @@ function normalizeQuotaDisplay(value: number, unit: string): { value: number; un
 export default function StorageManagementPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const tableState = useRemoteTableState('admin-storage', { pageSize: 20 })
 
   // Quota confirmation dialog state.
   const [isQuotaDialogOpen, setIsQuotaDialogOpen] = useState(false)
@@ -121,13 +122,28 @@ export default function StorageManagementPage() {
     !!storageCapabilities?.quota_enabled && !!storageCapabilities?.usage_readable
   const quotaManagementAvailable = usageAvailable && !!storageCapabilities?.quota_writable
 
-  // Load cached usage for all user spaces.
   const userSpacesQuery = useQuery({
-    queryKey: ['admin', 'user-spaces'],
-    queryFn: () =>
-      apiAdminGetUserSpaces(1, 1000).then((res: IResponse<PagedUserSpaces>) => res.data.items),
+    queryKey: [
+      'admin',
+      'user-spaces',
+      tableState.pagination.pageIndex,
+      tableState.pagination.pageSize,
+    ],
+    queryFn: async () => {
+      const response = await apiAdminGetUserSpaces(
+        tableState.pagination.pageIndex + 1,
+        tableState.pagination.pageSize
+      )
+      return {
+        items: response.data.items,
+        total: response.data.total,
+        page: response.data.page,
+        page_size: response.data.pageSize,
+      }
+    },
     enabled: usageAvailable,
     staleTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData,
   })
 
   // Apply a quota only after explicit confirmation in the dialog.
@@ -283,20 +299,27 @@ export default function StorageManagementPage() {
     },
   ]
   const columns = quotaManagementAvailable ? [...usageColumns, ...quotaColumns] : usageColumns
+  const proposedQuota = quotaUnit === 'unlimited' ? -1 : convertToBytes(quotaValue, quotaUnit)
+  const quotaBelowUsage =
+    !!selectedUser &&
+    selectedUser.size >= 0 &&
+    proposedQuota > 0 &&
+    proposedQuota <= selectedUser.size
 
   return (
     <>
       {usageAvailable ? (
-        <DataTable
+        <RemoteDataTable
           info={{
             title: t('navigation.storageManagement'),
             description: quotaManagementAvailable
               ? t('storageManagement.description')
               : t('storageManagement.readOnlyDescription'),
           }}
-          storageKey="admin-storage"
           query={userSpacesQuery}
+          state={tableState}
           columns={columns}
+          getRowId={(row) => row.user}
         >
           <Button
             variant="outline"
@@ -310,7 +333,7 @@ export default function StorageManagementPage() {
               ? t('storageManagement.refreshingUsage')
               : t('storageManagement.refreshUsage')}
           </Button>
-        </DataTable>
+        </RemoteDataTable>
       ) : (
         <Card>
           <CardHeader>
@@ -335,9 +358,27 @@ export default function StorageManagementPage() {
               </DialogTitle>
             </DialogHeader>
             <div className="grid gap-4 py-4">
+              <div className="grid gap-2 rounded-md border p-3 text-sm">
+                <div>
+                  <span className="text-muted-foreground">
+                    {t('storageManagement.currentQuota')}:
+                  </span>{' '}
+                  {selectedUser?.quota === -1
+                    ? t('storageManagement.unlimited')
+                    : selectedUser?.quota_formatted}
+                </div>
+                <div className="text-muted-foreground">
+                  {t('storageManagement.currentUsage', {
+                    usage:
+                      selectedUser && selectedUser.size >= 0
+                        ? selectedUser.formatted
+                        : t('storageManagement.usagePending'),
+                  })}
+                </div>
+              </div>
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="quota" className="text-right">
-                  {t('storageManagement.quota')}
+                  {t('storageManagement.newQuota')}
                 </Label>
                 <Input
                   id="quota"
@@ -363,14 +404,12 @@ export default function StorageManagementPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="text-muted-foreground text-sm">
-                {t('storageManagement.currentUsage', {
-                  usage:
-                    selectedUser && selectedUser.size >= 0
-                      ? selectedUser.formatted
-                      : t('storageManagement.usagePending'),
-                })}
-              </div>
+              {quotaBelowUsage && (
+                <div className="flex gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                  {t('storageManagement.quotaBelowUsageWarning')}
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button

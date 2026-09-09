@@ -9,11 +9,8 @@ export interface UserSpace {
   formatted: string
   updated_at?: string | null
   quota_formatted: string
-  is_expanded: boolean
-  jobs_frozen: boolean
-  shrink_stage?: string
-  original_quota?: number
-  original_quota_formatted?: string
+  database_quota: number
+  quota_synchronized: boolean
 }
 
 export interface PagedUserSpaces {
